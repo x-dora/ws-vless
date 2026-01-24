@@ -1,41 +1,77 @@
 /**
- * For more details on how to configure Wrangler, refer to:
+ * Wrangler 配置文件
+ * 
+ * 详细配置说明请参考:
  * https://developers.cloudflare.com/workers/wrangler/configuration/
+ * 
+ * ============================================================================
+ * 部署指南
+ * ============================================================================
+ * 
+ * 方式一：通过 Dashboard 设置（推荐）
+ * 1. 部署 Worker: npm run deploy
+ * 2. 在 Cloudflare Dashboard 中设置实际值:
+ *    Workers & Pages > ws-vless > Settings > Variables
+ * 3. 修改变量后点击 "Deploy" 保存
+ * 
+ * 方式二：通过 wrangler secret（敏感信息）
+ * 1. wrangler secret put API_KEY
+ * 2. wrangler secret put RW_API_KEY
+ * 3. npm run deploy
+ * 
+ * 本地开发：使用 .dev.vars 文件覆盖这里的占位值
+ * 
+ * ============================================================================
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "royal-art-bb1c",
+	// Worker 名称
+	"name": "ws-vless",
+	// 主入口文件
 	"main": "src/index.ts",
-	"compatibility_date": "2025-09-27",
+	// 兼容性日期
+	"compatibility_date": "2024-03-14",
+	"compatibility_flags": [],
+	// 可观测性配置
 	"observability": {
-		"enabled": true
-	}
+		"enabled": true,
+		"traces": {
+			"enabled": true
+		},
+		"logs": {
+			"enabled": true
+		}
+	},
+	/**
+	 * 环境变量说明
+	 * 
+	 * 所有环境变量都通过 Cloudflare Dashboard 设置:
+	 * Workers & Pages > ws-vless > Settings > Variables
+	 * 
+	 * 必需变量:
+	 * - API_KEY: API 端点访问密钥
+	 * - RW_API_URL: Remnawave API 地址
+	 * - RW_API_KEY: Remnawave API 密钥
+	 * 
+	 * 可选变量:
+	 * - UUID_CACHE_TTL: 缓存时间（秒），默认 300
+	 * - DEV_MODE: 设置为 "true" 启用开发模式（一般不需要）
+	 * 
+	 * 本地开发：使用 .dev.vars 文件设置所有变量
+	 */
 	/**
 	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
+	 * https://developers.cloudflare.com/workers/configuration/smart-placement/
 	 */
-	// "placement": {  "mode": "smart" }
+	// "placement": { "mode": "smart" }
 	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
-	/**
-	 * Static Assets
+	 * 静态资源绑定
 	 * https://developers.cloudflare.com/workers/static-assets/binding/
 	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
+	// "assets": { "directory": "./public/", "binding": "ASSETS" }
 	/**
-	 * Service Bindings (communicate between multiple Workers)
+	 * 服务绑定（多 Worker 通信）
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
 	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	// "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
 }
