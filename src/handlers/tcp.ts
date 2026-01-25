@@ -1,6 +1,6 @@
 /**
  * TCP 出站处理模块
- * 处理 VLESS TCP 代理连接
+ * 处理代理 TCP 连接
  */
 
 // @ts-ignore - Cloudflare Workers 特有模块
@@ -23,7 +23,7 @@ import { safeCloseWebSocket } from '../utils/_websocket';
  * @param portRemote 远程端口
  * @param rawClientData 原始客户端数据
  * @param webSocket WebSocket 连接
- * @param vlessResponseHeader VLESS 响应头
+ * @param responseHeader 协议响应头
  * @param log 日志函数
  * @param proxyIP 代理 IP（用于重试）
  */
@@ -32,8 +32,8 @@ export async function handleTCPOutBound(
   addressRemote: string,
   portRemote: number,
   rawClientData: Uint8Array,
-  webSocket: any,
-  vlessResponseHeader: Uint8Array,
+  webSocket: WebSocket,
+  responseHeader: Uint8Array,
   log: LogFunction,
   proxyIP?: string
 ): Promise<void> {
@@ -80,14 +80,14 @@ export async function handleTCPOutBound(
       });
 
     // 将远程数据转发到 WebSocket
-    remoteSocketToWS(tcpSocket, webSocket, vlessResponseHeader, null, log);
+    remoteSocketToWS(tcpSocket, webSocket, responseHeader, null, log);
   }
 
   // 首先尝试直连
   const tcpSocket = await connectAndWrite(addressRemote, portRemote);
 
   // 将远程数据转发到 WebSocket，如果没有数据则重试
-  remoteSocketToWS(tcpSocket, webSocket, vlessResponseHeader, retry, log);
+  remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log);
 }
 
 // ============================================================================
@@ -99,18 +99,18 @@ export async function handleTCPOutBound(
  * 
  * @param remoteSocket 远程 TCP socket
  * @param webSocket WebSocket 连接
- * @param vlessResponseHeader VLESS 响应头
+ * @param responseHeader 协议响应头
  * @param retry 重试函数（可选）
  * @param log 日志函数
  */
 export async function remoteSocketToWS(
   remoteSocket: Socket,
-  webSocket: any,
-  vlessResponseHeader: Uint8Array | null,
+  webSocket: WebSocket,
+  responseHeader: Uint8Array | null,
   retry: (() => Promise<void>) | null,
   log: LogFunction
 ): Promise<void> {
-  let vlessHeader: Uint8Array | null = vlessResponseHeader;
+  let header: Uint8Array | null = responseHeader;
   let hasIncomingData = false;
 
   await remoteSocket.readable
@@ -130,11 +130,11 @@ export async function remoteSocketToWS(
           }
 
           // 发送数据
-          if (vlessHeader) {
-            // 第一次发送需要附加 VLESS 响应头
-            const combined = await new Blob([vlessHeader, chunk]).arrayBuffer();
+          if (header) {
+            // 第一次发送需要附加响应头
+            const combined = await new Blob([header, chunk]).arrayBuffer();
             webSocket.send(combined);
-            vlessHeader = null;
+            header = null;
           } else {
             webSocket.send(chunk);
           }

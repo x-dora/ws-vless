@@ -197,13 +197,13 @@ ${header}
 // ============================================================================
 
 /**
- * 快速生成 VLESS 配置
+ * 快速生成配置
  * @param userID 用户 UUID
  * @param hostName 服务器主机名
  * @param type 配置类型
  * @returns 配置字符串
  */
-export function generateVlessConfig(
+export function generateConfig(
   userID: string,
   hostName: string,
   type: ClientConfigType = 'all'

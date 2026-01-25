@@ -1,6 +1,6 @@
 /**
  * UDP 出站处理模块
- * 处理 VLESS UDP 代理连接（主要用于 DNS 查询）
+ * 处理代理 UDP 连接（主要用于 DNS 查询）
  */
 
 import type { LogFunction } from '../types';
@@ -21,18 +21,18 @@ export type UDPWriteFunction = (chunk: Uint8Array) => void;
  * 目前仅支持 DNS 查询（端口 53）
  * 
  * @param webSocket WebSocket 连接
- * @param vlessResponseHeader VLESS 响应头
+ * @param responseHeader 协议响应头
  * @param log 日志函数
  * @param dnsServer DNS 服务器地址
  * @returns 包含写入函数的对象
  */
 export async function handleUDPOutBound(
-  webSocket: any,
-  vlessResponseHeader: Uint8Array,
+  webSocket: WebSocket,
+  responseHeader: Uint8Array,
   log: LogFunction,
   dnsServer: string = DEFAULT_DNS_SERVER
 ): Promise<{ write: UDPWriteFunction }> {
-  let isVlessHeaderSent = false;
+  let isHeaderSent = false;
 
   // 创建 TransformStream 来解析 UDP 数据包
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -90,19 +90,19 @@ export async function handleUDPOutBound(
           if (webSocket.readyState === WS_READY_STATE.OPEN) {
             log(`DoH success, DNS response length: ${udpSize}`);
 
-            if (isVlessHeaderSent) {
-              // 后续响应不需要 VLESS 头
+            if (isHeaderSent) {
+              // 后续响应不需要协议头
               const combined = await new Blob([udpSizeBuffer, dnsQueryResult]).arrayBuffer();
               webSocket.send(combined);
             } else {
-              // 第一次响应需要附加 VLESS 头
+              // 第一次响应需要附加协议头
               const combined = await new Blob([
-                vlessResponseHeader,
+                responseHeader,
                 udpSizeBuffer,
                 dnsQueryResult,
               ]).arrayBuffer();
               webSocket.send(combined);
-              isVlessHeaderSent = true;
+              isHeaderSent = true;
             }
           }
         },

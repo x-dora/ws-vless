@@ -1,10 +1,11 @@
 /**
- * VLESS Worker 主入口
- * Cloudflare Worker 实现的 VLESS 代理服务
+ * Tunnel Worker 主入口
+ * Cloudflare Worker 实现的代理服务
  * 
  * 功能特性:
- * - 支持 VLESS over WebSocket 协议
+ * - 支持代理协议 over WebSocket
  * - 支持 TCP 和 UDP (DNS) 代理
+ * - 支持 Mux.Cool 多路复用协议
  * - 支持多 UUID 验证（所有有效 UUID 都可以连接）
  * - 支持多平台 UUID 获取（Remnawave 等）
  * - 使用 Cache API 缓存 UUID 列表
@@ -16,18 +17,16 @@
  * @license MIT
  */
 ;
-// @ts-ignore - Cloudflare Workers 特有模块
-import { connect } from 'cloudflare:sockets';
 import type { WorkerEnv } from './types';
 import { getConfig } from './config';
 import { isValidUUID } from './utils/uuid';
-import { handleVlessOverWS } from './handlers/vless';
-import { createUUIDValidator } from './protocol/vless-header';
-import { generateVlessConfig } from './output/config-generator'
+import { handleTunnelOverWS } from './handlers/connection';
+import { createUUIDValidator } from './core/header';
 import { 
   createUUIDManager, 
   StaticUUIDProvider, 
   HttpApiUUIDProvider,
+  createRemnawaveProvider,
   type UUIDProviderManager 
 } from './providers';
 
@@ -110,13 +109,14 @@ export default {
       const upgradeHeader = request.headers.get('Upgrade');
 
       if (upgradeHeader === 'websocket') {
-        // 处理 VLESS WebSocket 连接
-        return await handleVlessOverWS(request, {
+        // 处理 WebSocket 代理连接
+        const muxEnabled = env.MUX_ENABLED !== 'false'; // 默认启用
+        return await handleTunnelOverWS(request, {
           validateUUID,
           proxyIP: config.proxyIP,
-          dnsServer: config.dnsServer
+          dnsServer: config.dnsServer,
+          muxEnabled,
         });
-        // return new Response('WebSocket disabled for testing', { status: 503 });
       }
 
       // 处理普通 HTTP 请求
@@ -203,7 +203,7 @@ async function handleHttpRequest(
 function handleRootPath(request: Request): Response {
   // 返回 Cloudflare 请求信息
   const cf = (request as unknown as { cf?: object }).cf;
-  return new Response(JSON.stringify(cf || { message: 'VLESS Worker Running' }, null, 2), {
+  return new Response(JSON.stringify(cf || { message: 'Tunnel Worker Running' }, null, 2), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });
@@ -213,9 +213,8 @@ function handleRootPath(request: Request): Response {
  * 处理配置路径请求
  */
 function handleConfigPath(userID: string, hostName: string): Response {
-  const config = generateVlessConfig(userID, hostName, 'all');
-  return new Response(config, {
-    status: 200,
+  return new Response("Not implemented", {
+    status: 404,
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   });
 }
@@ -264,7 +263,7 @@ async function handleStatsPath(manager: UUIDProviderManager): Promise<Response> 
 /**
  * 初始化 UUID 提供者管理器
  * 
- * 所有注册的提供者返回的 UUID 都可以用于 VLESS 连接验证
+ * 所有注册的提供者返回的 UUID 都可以用于连接验证
  * UUID 列表使用 Cache API 缓存，解决 Worker 无状态问题
  * 
  * 注意：
@@ -298,15 +297,15 @@ function initializeUUIDManager(
   // Remnawave API 提供者
   // 如果配置了 RW_API_URL 和 RW_API_KEY，自动注册
   // =========================================================================
-  // const remnawaveProvider = createRemnawaveProvider(
-  //   env.RW_API_URL,
-  //   env.RW_API_KEY,
-  //   { cacheTTL }
-  // );
-  // if (remnawaveProvider) {
-  //   manager.register(remnawaveProvider);
-  //   console.log('[Init] Remnawave provider registered');
-  // }
+  const remnawaveProvider = createRemnawaveProvider(
+    env.RW_API_URL,
+    env.RW_API_KEY,
+    { cacheTTL }
+  );
+  if (remnawaveProvider) {
+    manager.register(remnawaveProvider);
+    console.log('[Init] Remnawave provider registered');
+  }
 
   // =========================================================================
   // 在这里注册其他自定义 UUID 提供者
@@ -348,9 +347,13 @@ export {
   StaticUUIDProvider,
   HttpApiUUIDProvider,
   
-  // 配置生成
-  generateVlessConfig,
-  
   // UUID 验证器
   createUUIDValidator,
 };
+
+// 核心协议
+export * from './core';
+
+// 处理器
+export { handleTunnelOverWS } from './handlers/connection';
+export { MuxSession, createMuxSession } from './handlers/mux-session';

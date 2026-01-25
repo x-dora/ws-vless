@@ -24,7 +24,7 @@ import {
  * 根据 API 文档定义
  */
 interface RemnawaveUser {
-  /** VLESS UUID */
+  /** 用户 UUID（API 字段名为 vlessUuid） */
   vlessUuid: string;
   /** 用户名 */
   username?: string;

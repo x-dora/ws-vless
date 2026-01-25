@@ -1,32 +1,36 @@
 /**
- * VLESS WebSocket 处理模块
- * 处理 VLESS over WebSocket 连接
+ * WebSocket 连接处理模块
+ * 处理代理协议的 WebSocket 连接（支持普通连接和 Mux 多路复用）
  */
 
 import type { RemoteSocketWrapper, LogFunction } from '../types';
 import { 
-  processVlessHeader, 
-  createVlessResponseHeader,
+  processHeader, 
+  createResponseHeader,
   type UUIDValidator,
-} from '../protocol/vless-header';
+} from '../core/header';
+import { isMuxConnection } from '../core/mux';
 import { makeReadableWebSocketStream } from '../utils/_websocket';
 import { handleTCPOutBound } from './tcp';
 import { handleUDPOutBound, type UDPWriteFunction } from './udp';
+import { createMuxSession, type MuxSession } from './mux-session';
 
 // ============================================================================
-// VLESS 处理配置
+// 处理配置
 // ============================================================================
 
 /**
- * VLESS 处理选项
+ * 连接处理选项
  */
-export interface VlessHandlerOptions {
+export interface ConnectionHandlerOptions {
   /** UUID 验证器函数，验证连接的 UUID 是否有效 */
   validateUUID: UUIDValidator;
   /** 代理 IP（用于 TCP 重试） */
   proxyIP?: string;
   /** DNS 服务器地址 */
   dnsServer?: string;
+  /** 是否启用 Mux 多路复用 */
+  muxEnabled?: boolean;
 }
 
 // ============================================================================
@@ -34,17 +38,17 @@ export interface VlessHandlerOptions {
 // ============================================================================
 
 /**
- * 处理 VLESS over WebSocket 请求
+ * 处理 WebSocket 代理请求
  * 
  * @param request 传入的 HTTP 请求
- * @param options VLESS 处理选项
+ * @param options 处理选项
  * @returns WebSocket 升级响应
  */
-export async function handleVlessOverWS(
+export async function handleTunnelOverWS(
   request: Request,
-  options: VlessHandlerOptions
+  options: ConnectionHandlerOptions
 ): Promise<Response> {
-  const { validateUUID, proxyIP, dnsServer } = options;
+  const { validateUUID, proxyIP, dnsServer, muxEnabled = true } = options;
 
   // 创建 WebSocket 对
   const webSocketPair = new WebSocketPair();
@@ -83,12 +87,21 @@ export async function handleVlessOverWS(
   let udpStreamWrite: UDPWriteFunction | null = null;
   let isDns = false;
 
+  // Mux 会话（如果是 Mux 连接）
+  let muxSession: MuxSession | null = null;
+
   // 处理 WebSocket 数据流
   // ws --> remote
   readableWebSocketStream
     .pipeTo(
       new WritableStream({
         async write(chunk: ArrayBuffer, controller) {
+          // 处理 Mux 数据
+          if (muxSession) {
+            await muxSession.processData(chunk);
+            return;
+          }
+
           // 处理 DNS UDP 流
           if (isDns && udpStreamWrite) {
             return udpStreamWrite(new Uint8Array(chunk));
@@ -102,49 +115,62 @@ export async function handleVlessOverWS(
             return;
           }
 
-          // 首次连接：解析 VLESS 协议头，使用验证器验证 UUID
+          // 首次连接：解析协议头，使用验证器验证 UUID
           const {
             hasError,
             message,
             portRemote = 443,
             addressRemote = '',
             rawDataIndex,
-            vlessVersion = new Uint8Array([0, 0]),
+            protocolVersion = new Uint8Array([0, 0]),
             isUDP,
-          } = processVlessHeader(chunk, validateUUID);
+            isMux,
+          } = processHeader(chunk, validateUUID);
 
           // 更新日志信息
           address = addressRemote;
-          portWithRandomLog = `${portRemote}--${Math.random().toString(36).substr(2, 4)} ${
-            isUDP ? 'udp' : 'tcp'
-          }`;
+          const connectionType = isMux ? 'mux' : (isUDP ? 'udp' : 'tcp');
+          portWithRandomLog = `${portRemote}--${Math.random().toString(36).substr(2, 4)} ${connectionType}`;
 
           // 处理解析错误
           if (hasError) {
             throw new Error(message);
           }
 
-          // UDP 处理（仅支持 DNS）
-          if (isUDP) {
+          // 创建响应头
+          const responseHeader = createResponseHeader(protocolVersion);
+
+          // 提取原始客户端数据
+          const rawClientData = new Uint8Array(chunk.slice(rawDataIndex));
+
+          // 根据连接类型处理
+          if (isMux && muxEnabled) {
+            // Mux 多路复用连接
+            log('Mux connection established');
+            muxSession = createMuxSession({
+              webSocket,
+              responseHeader,
+              log,
+              proxyIP,
+              dnsServer,
+            });
+            
+            // 处理初始数据
+            if (rawClientData.length > 0) {
+              await muxSession.processData(rawClientData.buffer);
+            }
+          } else if (isUDP) {
+            // UDP 处理（仅支持 DNS）
             if (portRemote === 53) {
               isDns = true;
             } else {
               throw new Error('UDP proxy only supports DNS (port 53)');
             }
-          }
 
-          // 创建 VLESS 响应头
-          const vlessResponseHeader = createVlessResponseHeader(vlessVersion);
-
-          // 提取原始客户端数据
-          const rawClientData = new Uint8Array(chunk.slice(rawDataIndex));
-
-          // 根据协议类型处理
-          if (isDns) {
             // DNS 查询
             const { write } = await handleUDPOutBound(
               webSocket,
-              vlessResponseHeader,
+              responseHeader,
               log,
               dnsServer
             );
@@ -158,7 +184,7 @@ export async function handleVlessOverWS(
               portRemote,
               rawClientData,
               webSocket,
-              vlessResponseHeader,
+              responseHeader,
               log,
               proxyIP
             );
@@ -167,10 +193,18 @@ export async function handleVlessOverWS(
 
         close() {
           log('ReadableWebSocketStream closed');
+          // 清理 Mux 会话
+          if (muxSession) {
+            muxSession.close();
+          }
         },
 
         abort(reason) {
           log('ReadableWebSocketStream aborted', JSON.stringify(reason));
+          // 清理 Mux 会话
+          if (muxSession) {
+            muxSession.close();
+          }
         },
       })
     )
@@ -185,3 +219,4 @@ export async function handleVlessOverWS(
     webSocket: client,
   });
 }
+

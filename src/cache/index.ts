@@ -18,7 +18,7 @@
 /**
  * 缓存键前缀
  */
-const CACHE_KEY_PREFIX = 'https://vless-worker-cache.internal/';
+const CACHE_KEY_PREFIX = 'https://tunnel-worker-cache.internal/';
 
 /**
  * 生成缓存键 URL

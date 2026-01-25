@@ -1,5 +1,5 @@
 /**
- * VLESS Worker 类型定义
+ * Tunnel Worker 类型定义
  * 定义项目中使用的所有 TypeScript 类型和接口
  */
 
@@ -13,7 +13,7 @@
  * 敏感信息（如密钥）应使用 wrangler secret put 命令设置
  */
 export interface WorkerEnv {
-  /** 默认 UUID，用于验证 VLESS 客户端 */
+  /** 默认 UUID，用于验证客户端 */
   UUID?: string;
   /** 代理 IP，用于 TCP 连接重试时的备用地址 */
   PROXY_IP?: string;
@@ -39,16 +39,25 @@ export interface WorkerEnv {
   RW_API_KEY?: string;
   /** UUID 缓存时间（秒），默认 300 */
   UUID_CACHE_TTL?: string;
+
+  // =========================================================================
+  // Mux 配置
+  // =========================================================================
+  
+  /** 是否启用 Mux 多路复用，默认 "true" */
+  MUX_ENABLED?: string;
+  /** Mux 连接超时时间（秒），默认 300 */
+  MUX_TIMEOUT?: string;
 }
 
 // ============================================================================
-// VLESS 协议类型
+// 协议类型
 // ============================================================================
 
 /**
- * VLESS 协议头解析结果
+ * 协议头解析结果
  */
-export interface VlessHeaderResult {
+export interface HeaderResult {
   /** 是否解析出错 */
   hasError: boolean;
   /** 错误信息 */
@@ -61,16 +70,18 @@ export interface VlessHeaderResult {
   portRemote?: number;
   /** 原始数据开始索引 */
   rawDataIndex?: number;
-  /** VLESS 协议版本 */
-  vlessVersion?: Uint8Array;
+  /** 协议版本 */
+  protocolVersion?: Uint8Array;
   /** 是否为 UDP 连接 */
   isUDP?: boolean;
+  /** 是否为 Mux 多路复用连接 */
+  isMux?: boolean;
 }
 
 /**
- * VLESS 命令类型
+ * 命令类型
  */
-export const enum VlessCommand {
+export const enum ProxyCommand {
   TCP = 0x01,
   UDP = 0x02,
   MUX = 0x03,
@@ -200,3 +211,4 @@ export const WS_READY_STATE = {
 } as const;
 
 export type WebSocketReadyState = typeof WS_READY_STATE[keyof typeof WS_READY_STATE];
+

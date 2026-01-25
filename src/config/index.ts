@@ -34,6 +34,11 @@ export const WS_EARLY_DATA_PARAM = '?ed=2048';
  */
 export const DEFAULT_PORT = 443;
 
+/**
+ * 默认 Mux 连接超时时间（秒）
+ */
+export const DEFAULT_MUX_TIMEOUT = 300;
+
 // ============================================================================
 // 配置管理类
 // ============================================================================
@@ -52,10 +57,18 @@ export class RuntimeConfig {
   /** DNS 服务器地址 */
   public readonly dnsServer: string;
 
+  /** 是否启用 Mux */
+  public readonly muxEnabled: boolean;
+
+  /** Mux 超时时间（秒） */
+  public readonly muxTimeout: number;
+
   constructor(env: WorkerEnv) {
     this.userID = env.UUID || DEFAULT_UUID;
     this.proxyIP = env.PROXY_IP || DEFAULT_PROXY_IP;
     this.dnsServer = env.DNS_SERVER || DEFAULT_DNS_SERVER;
+    this.muxEnabled = env.MUX_ENABLED !== 'false';
+    this.muxTimeout = env.MUX_TIMEOUT ? parseInt(env.MUX_TIMEOUT, 10) : DEFAULT_MUX_TIMEOUT;
   }
 
   /**

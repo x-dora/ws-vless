@@ -1,22 +1,19 @@
 /**
- * VLESS 协议头解析模块
- * 实现 VLESS 协议的头部解析
- * 
- * 协议规范参考:
- * - https://xtls.github.io/development/protocols/vless.html
- * - https://github.com/zizifn/excalidraw-backup/blob/main/v2ray-protocol.excalidraw
+ * 协议头解析模块
+ * 实现代理协议的头部解析
  */
 
-import type { VlessHeaderResult } from '../types';
-import { AddressType, VlessCommand } from '../types';
+import type { HeaderResult } from '../types';
+import { AddressType, ProxyCommand } from '../types';
 import { stringify } from '../utils/uuid';
+import { isMuxConnection } from './mux';
 
 // ============================================================================
 // 协议常量
 // ============================================================================
 
 /**
- * VLESS 协议头最小长度
+ * 协议头最小长度
  * 版本(1) + UUID(16) + 附加信息长度(1) + 命令(1) + 端口(2) + 地址类型(1) = 22
  * 加上最小地址长度(1或4)，至少需要 24 字节
  */
@@ -69,17 +66,17 @@ export function createSingleUUIDValidator(userID: string): UUIDValidator {
 // ============================================================================
 
 /**
- * 解析 VLESS 协议头
- * @param vlessBuffer 接收到的二进制数据
+ * 解析协议头
+ * @param buffer 接收到的二进制数据
  * @param validateUUID UUID 验证器函数，验证 UUID 是否有效
- * @returns VlessHeaderResult 解析结果
+ * @returns HeaderResult 解析结果
  */
-export function processVlessHeader(
-  vlessBuffer: ArrayBuffer,
+export function processHeader(
+  buffer: ArrayBuffer,
   validateUUID: UUIDValidator
-): VlessHeaderResult {
+): HeaderResult {
   // 验证最小长度
-  if (vlessBuffer.byteLength < MIN_HEADER_LENGTH) {
+  if (buffer.byteLength < MIN_HEADER_LENGTH) {
     return {
       hasError: true,
       message: 'Invalid data: buffer too short',
@@ -87,10 +84,10 @@ export function processVlessHeader(
   }
 
   // 提取协议版本（第一个字节）
-  const version = new Uint8Array(vlessBuffer.slice(0, 1));
+  const version = new Uint8Array(buffer.slice(0, 1));
 
   // 提取并验证 UUID
-  const receivedUUID = stringify(new Uint8Array(vlessBuffer.slice(UUID_START, UUID_END)));
+  const receivedUUID = stringify(new Uint8Array(buffer.slice(UUID_START, UUID_END)));
   if (!validateUUID(receivedUUID)) {
     return {
       hasError: true,
@@ -99,34 +96,58 @@ export function processVlessHeader(
   }
 
   // 读取附加信息长度（当前跳过附加信息）
-  const optLength = new Uint8Array(vlessBuffer.slice(OPT_LENGTH_INDEX, OPT_LENGTH_INDEX + 1))[0];
+  const optLength = new Uint8Array(buffer.slice(OPT_LENGTH_INDEX, OPT_LENGTH_INDEX + 1))[0];
 
   // 读取命令类型
   const commandIndex = 18 + optLength;
-  const command = new Uint8Array(vlessBuffer.slice(commandIndex, commandIndex + 1))[0];
+  const command = new Uint8Array(buffer.slice(commandIndex, commandIndex + 1))[0];
 
   // 验证命令类型
   let isUDP = false;
-  if (command === VlessCommand.TCP) {
+  let isMux = false;
+  
+  if (command === ProxyCommand.TCP) {
     // TCP 命令
-  } else if (command === VlessCommand.UDP) {
+  } else if (command === ProxyCommand.UDP) {
     isUDP = true;
+  } else if (command === ProxyCommand.MUX) {
+    isMux = true;
   } else {
     return {
       hasError: true,
-      message: `Unsupported command: ${command}. Only TCP(0x01) and UDP(0x02) are supported.`,
+      message: `Unsupported command: ${command}. Supported: TCP(0x01), UDP(0x02), MUX(0x03).`,
+    };
+  }
+
+  // MUX 命令的特殊处理：后面直接是 Mux 帧数据，不需要解析端口和地址
+  if (isMux) {
+    return {
+      hasError: false,
+      addressRemote: 'mux.cool',
+      addressType: AddressType.Domain,
+      portRemote: 0,
+      rawDataIndex: commandIndex + 1, // Mux 帧紧跟在 command 之后
+      protocolVersion: version,
+      isUDP: false,
+      isMux: true,
     };
   }
 
   // 读取端口（大端序）
   const portIndex = commandIndex + 1;
-  const portBuffer = vlessBuffer.slice(portIndex, portIndex + 2);
+  const portBuffer = buffer.slice(portIndex, portIndex + 2);
   const portRemote = new DataView(portBuffer).getUint16(0);
 
   // 读取地址
-  const addressResult = parseAddress(vlessBuffer, portIndex + 2);
+  const addressTypeIndex = portIndex + 2;
+  const addressResult = parseAddress(buffer, addressTypeIndex);
   if (addressResult.hasError) {
     return addressResult;
+  }
+
+  // 检测是否为 Mux.Cool 连接（通过地址判断，例如目标是 v1.mux.cool）
+  if (isMuxConnection(addressResult.addressValue!)) {
+    isMux = true;
   }
 
   return {
@@ -135,8 +156,9 @@ export function processVlessHeader(
     addressType: addressResult.addressType,
     portRemote,
     rawDataIndex: addressResult.endIndex,
-    vlessVersion: version,
+    protocolVersion: version,
     isUDP,
+    isMux,
   };
 }
 
@@ -156,7 +178,7 @@ interface AddressParseResult {
 }
 
 /**
- * 解析 VLESS 协议中的地址字段
+ * 解析协议中的地址字段
  * @param buffer 协议数据
  * @param startIndex 地址字段起始位置
  * @returns AddressParseResult 解析结果
@@ -235,11 +257,12 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
 // ============================================================================
 
 /**
- * 创建 VLESS 响应头
+ * 创建协议响应头
  * @param version 协议版本
  * @returns 2 字节的响应头
  */
-export function createVlessResponseHeader(version: Uint8Array): Uint8Array {
+export function createResponseHeader(version: Uint8Array): Uint8Array {
   // 响应格式: [版本, 附加信息长度(0)]
   return new Uint8Array([version[0], 0]);
 }
+
