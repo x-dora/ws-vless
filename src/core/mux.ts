@@ -175,28 +175,34 @@ export function isMuxConnection(address: string): boolean {
 }
 
 /**
- * 解析 Mux 帧
- * @param buffer 数据缓冲区
+ * 解析 Mux 帧（零拷贝优化版）
+ * @param bytes 数据字节数组
  * @param offset 起始偏移（默认 0）
+ * @param length 可用长度（默认到数组末尾）
  * @returns 解析结果
+ * 
+ * 优化：使用 subarray 而非 slice，避免数据拷贝，降低 CPU 开销
  */
-export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParseResult {
-  const view = new DataView(buffer, offset);
-  const bytes = new Uint8Array(buffer, offset);
-
+export function parseMuxFrame(
+  bytes: Uint8Array,
+  offset: number = 0,
+  length?: number
+): MuxParseResult {
+  const availableLength = length ?? (bytes.length - offset);
+  
   // 检查最小长度（元数据长度字段 2 字节）
-  if (bytes.length < 2) {
+  if (availableLength < 2) {
     return {
       hasError: true,
       message: 'Buffer too short for Mux frame',
     };
   }
 
-  // 读取元数据长度
-  const metadataLength = view.getUint16(0);
+  // 读取元数据长度（手动读取避免创建 DataView）
+  const metadataLength = (bytes[offset] << 8) | bytes[offset + 1];
   
   // 检查是否有足够的元数据
-  if (bytes.length < 2 + metadataLength) {
+  if (availableLength < 2 + metadataLength) {
     return {
       hasError: true,
       message: 'Incomplete Mux metadata',
@@ -211,10 +217,10 @@ export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParse
     };
   }
 
-  // 解析基础元数据
-  const id = view.getUint16(2);
-  const status = bytes[4] as MuxStatus;
-  const option = bytes[5];
+  // 解析基础元数据（手动读取避免创建 DataView）
+  const id = (bytes[offset + 2] << 8) | bytes[offset + 3];
+  const status = bytes[offset + 4] as MuxStatus;
+  const option = bytes[offset + 5];
   const hasData = (option & MuxOption.Data) !== 0;
 
   const metadata: MuxMetadata = { id, status, option, hasData };
@@ -228,17 +234,17 @@ export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParse
   switch (status) {
     case MuxStatus.New: {
       // 新建连接：网络类型(1) + 端口(2) + 地址类型(1) + 地址 + GlobalID(8, XUDP)
-      const network = bytes[6] as MuxNetwork;
-      const port = view.getUint16(7);
-      const addressType = bytes[9] as AddressType;
+      const network = bytes[offset + 6] as MuxNetwork;
+      const port = (bytes[offset + 7] << 8) | bytes[offset + 8];
+      const addressType = bytes[offset + 9] as AddressType;
       
-      const { address, length: addrLen } = parseAddress(bytes, 10, addressType);
+      const { address, length: addrLen } = parseAddress(bytes, offset + 10, addressType);
       
-      // XUDP Global ID（8 字节，如果有的话）
+      // XUDP Global ID（8 字节，如果有的话）- 使用 subarray 避免拷贝
       let globalId: Uint8Array | undefined;
-      const expectedMetaLen = 4 + 1 + 2 + 1 + addrLen + 8; // 基础 + 网络 + 端口 + 地址类型 + 地址 + GlobalID
-      if (metadataLength >= expectedMetaLen - 4) { // 减去基础的4字节
-        globalId = bytes.slice(10 + addrLen, 10 + addrLen + 8);
+      const expectedMetaLen = 4 + 1 + 2 + 1 + addrLen + 8;
+      if (metadataLength >= expectedMetaLen - 4) {
+        globalId = bytes.subarray(offset + 10 + addrLen, offset + 10 + addrLen + 8);
       }
 
       newConnection = { network, port, addressType, address, globalId };
@@ -248,11 +254,11 @@ export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParse
     case MuxStatus.Keep: {
       // UDP Keep 帧包含地址信息
       if (metadataLength > 4) {
-        const network = bytes[6] as MuxNetwork;
+        const network = bytes[offset + 6] as MuxNetwork;
         if (network === MuxNetwork.UDP) {
-          const port = view.getUint16(7);
-          const addressType = bytes[9] as AddressType;
-          const { address } = parseAddress(bytes, 10, addressType);
+          const port = (bytes[offset + 7] << 8) | bytes[offset + 8];
+          const addressType = bytes[offset + 9] as AddressType;
+          const { address } = parseAddress(bytes, offset + 10, addressType);
           udpAddress = { network, port, addressType, address };
         }
       }
@@ -274,24 +280,24 @@ export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParse
   // 解析数据部分
   if (hasData) {
     // 数据格式: 长度(2) + 数据
-    if (bytes.length < frameLength + 2) {
+    if (availableLength < frameLength + 2) {
       return {
         hasError: true,
         message: 'Incomplete Mux data length',
       };
     }
 
-    const dataView = new DataView(buffer, offset + frameLength);
-    const dataLength = dataView.getUint16(0);
+    const dataLength = (bytes[offset + frameLength] << 8) | bytes[offset + frameLength + 1];
     
-    if (bytes.length < frameLength + 2 + dataLength) {
+    if (availableLength < frameLength + 2 + dataLength) {
       return {
         hasError: true,
         message: 'Incomplete Mux data',
       };
     }
 
-    data = bytes.slice(frameLength + 2, frameLength + 2 + dataLength);
+    // 使用 subarray 避免拷贝，返回原数组的视图
+    data = bytes.subarray(offset + frameLength + 2, offset + frameLength + 2 + dataLength);
     frameLength += 2 + dataLength;
   }
 
@@ -307,8 +313,12 @@ export function parseMuxFrame(buffer: ArrayBuffer, offset: number = 0): MuxParse
   };
 }
 
+// 复用 TextDecoder 实例，避免重复创建
+const textDecoder = new TextDecoder();
+
 /**
- * 解析地址
+ * 解析地址（优化版）
+ * 使用 subarray 避免数据拷贝
  */
 function parseAddress(
   bytes: Uint8Array,
@@ -317,23 +327,27 @@ function parseAddress(
 ): { address: string; length: number } {
   switch (addressType) {
     case AddressType.IPv4: {
-      const address = Array.from(bytes.slice(offset, offset + 4)).join('.');
+      // 直接读取，避免 Array.from
+      const address = `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
       return { address, length: 4 };
     }
 
     case AddressType.Domain: {
       const domainLength = bytes[offset];
-      const address = new TextDecoder().decode(
-        bytes.slice(offset + 1, offset + 1 + domainLength)
+      // 使用 subarray 避免拷贝
+      const address = textDecoder.decode(
+        bytes.subarray(offset + 1, offset + 1 + domainLength)
       );
       return { address, length: 1 + domainLength };
     }
 
     case AddressType.IPv6: {
+      // 手动读取避免创建 DataView
       const parts: string[] = [];
-      const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 16);
       for (let i = 0; i < 8; i++) {
-        parts.push(view.getUint16(i * 2).toString(16));
+        const pos = offset + i * 2;
+        const value = (bytes[pos] << 8) | bytes[pos + 1];
+        parts.push(value.toString(16));
       }
       return { address: parts.join(':'), length: 16 };
     }
@@ -344,7 +358,7 @@ function parseAddress(
 }
 
 // ============================================================================
-// 帧构建
+// 帧构建（优化版 - 避免 DataView，使用直接字节操作）
 // ============================================================================
 
 /**
@@ -370,18 +384,20 @@ export function buildMuxFrame(
 
   // 计算总长度
   let totalLength = 2 + metadataLength; // 元数据长度字段 + 元数据
-  if (data && data.length > 0) {
-    totalLength += 2 + data.length; // 数据长度字段 + 数据
+  const dataLen = data?.length || 0;
+  if (dataLen > 0) {
+    totalLength += 2 + dataLen; // 数据长度字段 + 数据
   }
 
   const frame = new Uint8Array(totalLength);
-  const view = new DataView(frame.buffer);
 
-  // 写入元数据长度
-  view.setUint16(0, metadataLength);
+  // 写入元数据长度（大端序）
+  frame[0] = (metadataLength >> 8) & 0xff;
+  frame[1] = metadataLength & 0xff;
 
   // 写入基础元数据
-  view.setUint16(2, id);
+  frame[2] = (id >> 8) & 0xff;
+  frame[3] = id & 0xff;
   frame[4] = status;
   frame[5] = option;
 
@@ -391,42 +407,89 @@ export function buildMuxFrame(
   }
 
   // 写入数据
-  if (data && data.length > 0) {
+  if (dataLen > 0) {
     const dataOffset = 2 + metadataLength;
-    view.setUint16(dataOffset, data.length);
-    frame.set(data, dataOffset + 2);
+    frame[dataOffset] = (dataLen >> 8) & 0xff;
+    frame[dataOffset + 1] = dataLen & 0xff;
+    frame.set(data!, dataOffset + 2);
   }
 
   return frame;
 }
 
 /**
- * 构建 Keep 响应帧（用于 TCP）
+ * 构建 Keep 响应帧（用于 TCP）- 高频调用，内联优化
  * @param id 子连接 ID
  * @param data 数据
  * @returns 构建的帧
+ * 
+ * Keep 帧结构（无额外元数据）:
+ * - 元数据长度(2): 0x00 0x04
+ * - ID(2): big-endian
+ * - Status(1): 0x02 (Keep)
+ * - Option(1): 0x01 if has data, 0x00 otherwise
+ * - 数据长度(2): big-endian (if has data)
+ * - 数据: raw bytes (if has data)
  */
 export function buildMuxKeepFrame(id: number, data?: Uint8Array): Uint8Array {
-  const hasData = data && data.length > 0;
-  const option = hasData ? MuxOption.Data : 0;
-  return buildMuxFrame(id, MuxStatus.Keep, option, undefined, data);
+  const dataLen = data?.length || 0;
+  
+  if (dataLen === 0) {
+    // 无数据的 Keep 帧：固定 6 字节
+    const frame = new Uint8Array(6);
+    frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+    frame[2] = (id >> 8) & 0xff;
+    frame[3] = id & 0xff;
+    frame[4] = MuxStatus.Keep;
+    frame[5] = 0x00; // 无数据
+    return frame;
+  }
+  
+  // 有数据的 Keep 帧：6 + 2 + dataLen 字节
+  const frame = new Uint8Array(8 + dataLen);
+  frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+  frame[2] = (id >> 8) & 0xff;
+  frame[3] = id & 0xff;
+  frame[4] = MuxStatus.Keep;
+  frame[5] = MuxOption.Data;
+  frame[6] = (dataLen >> 8) & 0xff;
+  frame[7] = dataLen & 0xff;
+  frame.set(data!, 8);
+  return frame;
 }
 
 /**
- * 构建 End 帧
+ * 构建 End 帧 - 固定结构，内联优化
  * @param id 子连接 ID
  * @returns 构建的帧
+ * 
+ * End 帧结构（固定 6 字节）:
+ * - 元数据长度(2): 0x00 0x04
+ * - ID(2): big-endian
+ * - Status(1): 0x03 (End)
+ * - Option(1): 0x00
  */
 export function buildMuxEndFrame(id: number): Uint8Array {
-  return buildMuxFrame(id, MuxStatus.End, 0);
+  const frame = new Uint8Array(6);
+  frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+  frame[2] = (id >> 8) & 0xff;
+  frame[3] = id & 0xff;
+  frame[4] = MuxStatus.End;
+  frame[5] = 0x00;
+  return frame;
 }
 
 /**
- * 构建 KeepAlive 帧
+ * 构建 KeepAlive 帧 - 固定结构
  * @returns 构建的帧
  */
 export function buildMuxKeepAliveFrame(): Uint8Array {
-  // ID 可为随机值
-  const randomId = Math.floor(Math.random() * 65535);
-  return buildMuxFrame(randomId, MuxStatus.KeepAlive, 0);
+  const frame = new Uint8Array(6);
+  const randomId = (Math.random() * 65535) | 0; // 使用位运算替代 Math.floor
+  frame[0] = 0x00; frame[1] = 0x04;
+  frame[2] = (randomId >> 8) & 0xff;
+  frame[3] = randomId & 0xff;
+  frame[4] = MuxStatus.KeepAlive;
+  frame[5] = 0x00;
+  return frame;
 }

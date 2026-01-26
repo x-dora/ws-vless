@@ -79,13 +79,14 @@ function createTimeoutPromise(ms: number): Promise<never> {
 }
 
 /**
- * 将数据分割成指定大小的块（参考 Xray 的分块策略）
+ * 将数据分割成指定大小的块（零拷贝版本）
+ * 使用 subarray 返回原数组的视图，避免数据拷贝
  */
 function* splitIntoChunks(data: Uint8Array, chunkSize: number): Generator<Uint8Array> {
   let offset = 0;
   while (offset < data.length) {
     const end = Math.min(offset + chunkSize, data.length);
-    yield data.slice(offset, end);
+    yield data.subarray(offset, end);
     offset = end;
   }
 }
@@ -95,11 +96,14 @@ function* splitIntoChunks(data: Uint8Array, chunkSize: number): Generator<Uint8A
 // ============================================================================
 
 /**
- * WebSocket 写入队列
+ * WebSocket 写入队列（优化版）
  * 确保帧按顺序发送，避免并发写入问题
+ * 
+ * 优化：使用索引代替 shift()，避免数组元素移动开销
  */
 class WriteQueue {
   private queue: Uint8Array[] = [];
+  private head = 0; // 队列头索引
   private processing = false;
   private webSocket: WebSocket;
   private responseHeader: Uint8Array;
@@ -114,7 +118,8 @@ class WriteQueue {
    * 将数据加入发送队列
    */
   enqueue(data: Uint8Array): boolean {
-    if (this.queue.length >= MAX_WRITE_QUEUE) {
+    const effectiveLength = this.queue.length - this.head;
+    if (effectiveLength >= MAX_WRITE_QUEUE) {
       return false; // 队列满了
     }
     this.queue.push(data);
@@ -126,19 +131,20 @@ class WriteQueue {
    * 处理发送队列
    */
   private processQueue(): void {
-    if (this.processing || this.queue.length === 0) {
+    if (this.processing || this.head >= this.queue.length) {
       return;
     }
 
     if (this.webSocket.readyState !== WS_READY_STATE.OPEN) {
-      this.queue = []; // 清空队列
+      this.queue = [];
+      this.head = 0;
       return;
     }
 
     this.processing = true;
 
-    while (this.queue.length > 0) {
-      const data = this.queue.shift()!;
+    while (this.head < this.queue.length) {
+      const data = this.queue[this.head++];
       
       try {
         if (!this.headerSent) {
@@ -155,6 +161,12 @@ class WriteQueue {
         // 发送失败，停止处理
         break;
       }
+    }
+
+    // 定期压缩队列，避免内存泄漏
+    if (this.head > 64 && this.head >= this.queue.length) {
+      this.queue = [];
+      this.head = 0;
     }
 
     this.processing = false;
@@ -218,6 +230,16 @@ export class MuxSession {
   // 子连接管理
   private connections: Map<number, SubConnection> = new Map();
   
+  /**
+   * 已结束的会话 ID 集合
+   * 用于防止对同一个已关闭会话重复发送 End 帧
+   * 参考 Xray 的 Session.closed 标志，但适配已从 Map 删除的场景
+   */
+  private endedSessions: Set<number> = new Set();
+  
+  /** 已结束会话集合的最大容量，防止内存泄漏 */
+  private static readonly MAX_ENDED_SESSIONS = 256;
+  
   // WebSocket 相关
   private webSocket: WebSocket;
   private writeQueue: WriteQueue;
@@ -261,11 +283,16 @@ export class MuxSession {
   }
 
   // ==========================================================================
-  // 数据处理
+  // 数据处理（零拷贝优化版）
   // ==========================================================================
 
   /**
    * 处理传入的 Mux 数据
+   * 
+   * 优化策略：
+   * 1. 如果没有缓冲数据，直接在原数组上解析，避免任何拷贝
+   * 2. 只在必要时（有未完整帧）才进行缓冲区合并
+   * 3. 使用 parseMuxFrame 的 offset 参数避免 slice
    */
   async processData(data: ArrayBuffer): Promise<void> {
     if (this.closed) return;
@@ -273,15 +300,23 @@ export class MuxSession {
     this.stats.bytesReceived += data.byteLength;
     this.stats.lastActivityTime = Date.now();
     
-    // 合并缓冲区 - 简单可靠的方式
     const incoming = new Uint8Array(data);
-    const combined = new Uint8Array(this.buffer.length + incoming.length);
-    combined.set(this.buffer, 0);
-    combined.set(incoming, this.buffer.length);
     
-    // 解析帧
+    // 优化：如果没有缓冲数据，直接在 incoming 上解析
+    let bytes: Uint8Array;
+    if (this.buffer.length === 0) {
+      bytes = incoming;
+    } else {
+      // 只在必要时合并缓冲区
+      bytes = new Uint8Array(this.buffer.length + incoming.length);
+      bytes.set(this.buffer, 0);
+      bytes.set(incoming, this.buffer.length);
+      this.buffer = new Uint8Array(0); // 清空旧缓冲区
+    }
+    
+    // 解析帧 - 直接在原数组上使用 offset，避免 slice
     let offset = 0;
-    const totalLength = combined.length;
+    const totalLength = bytes.length;
     const frames: MuxFrame[] = [];
     let maxIterations = 1000;
 
@@ -289,9 +324,8 @@ export class MuxSession {
       const remainingLength = totalLength - offset;
       if (remainingLength < 2) break;
       
-      // 创建剩余数据的副本用于解析
-      const remainingData = combined.slice(offset, totalLength);
-      const result = parseMuxFrame(remainingData.buffer);
+      // 直接传入 offset，避免创建新数组
+      const result = parseMuxFrame(bytes, offset, remainingLength);
       
       if (result.hasError) {
         if (result.message?.includes('Incomplete') || result.message?.includes('too short')) {
@@ -311,14 +345,12 @@ export class MuxSession {
       offset += frame.frameLength;
     }
 
-    // 保留未处理的数据
+    // 保留未处理的数据（只在有剩余时才拷贝）
     if (offset < totalLength) {
-      this.buffer = combined.slice(offset);
-    } else {
-      this.buffer = new Uint8Array(0);
+      this.buffer = bytes.slice(offset);
     }
     
-    // 并行处理所有帧
+    // 处理所有帧
     for (const frame of frames) {
       this.handleFrame(frame).catch(err => {
         this.log(`Mux handleFrame error: ${err}`);
@@ -365,12 +397,16 @@ export class MuxSession {
   ): void {
     const isTCP = conn.network === MuxNetwork.TCP;
     
+    // 新连接：从已结束集合中移除（ID 可能被复用）
+    this.endedSessions.delete(id);
+    
     // 检查子请求限制
     if (isTCP) {
       if (this.stats.limitReached || this.stats.totalTCPConnections >= this.maxSubrequests) {
         this.stats.limitReached = true;
         this.log(`Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
         this.sendEndFrame(id);
+        this.markSessionEnded(id);
         return;
       }
       this.stats.totalTCPConnections++;
@@ -540,8 +576,13 @@ export class MuxSession {
     const subConn = this.connections.get(id);
     
     // 参考 Xray：未找到会话时发送关闭帧通知对端
+    // 但需要防止重复发送，避免"乒乓效应"导致日志爆炸
     if (!subConn) {
-      this.sendEndFrame(id);
+      if (!this.endedSessions.has(id)) {
+        this.markSessionEnded(id);
+        this.sendEndFrame(id);
+      }
+      // 如果已经发送过 End 帧，静默丢弃数据（参考 Xray 的 buf.Discard）
       return;
     }
     
@@ -573,10 +614,17 @@ export class MuxSession {
   // ==========================================================================
 
   private async handleEndConnection(id: number, data?: Uint8Array): Promise<void> {
-    this.log(`Mux End: id=${id}`);
-
     const subConn = this.connections.get(id);
-    if (!subConn) return;
+    
+    // 只有会话存在时才打印日志和处理，避免重复日志
+    // 参考 Xray 的 handleStatusEnd：只在找到会话时才执行操作
+    if (!subConn) {
+      // 标记为已结束，防止后续 Keep 帧触发重复 End
+      this.markSessionEnded(id);
+      return;
+    }
+
+    this.log(`Mux End: id=${id}`);
 
     // 先发送最后的数据
     if (data && data.length > 0 && subConn.writer && subConn.ready && !subConn.closed) {
@@ -614,6 +662,25 @@ export class MuxSession {
   private removeConnection(id: number): void {
     this.connections.delete(id);
     this.stats.activeConnections = this.connections.size;
+    // 标记为已结束，防止后续帧触发重复操作
+    this.markSessionEnded(id);
+  }
+
+  /**
+   * 标记会话为已结束
+   * 用于防止对已关闭会话重复发送 End 帧
+   */
+  private markSessionEnded(id: number): void {
+    // 如果集合过大，清理旧的条目防止内存泄漏
+    if (this.endedSessions.size >= MuxSession.MAX_ENDED_SESSIONS) {
+      // 简单策略：清空一半（实际生产环境可以用 LRU 等更复杂的策略）
+      const entries = Array.from(this.endedSessions);
+      const removeCount = Math.floor(entries.length / 2);
+      for (let i = 0; i < removeCount; i++) {
+        this.endedSessions.delete(entries[i]);
+      }
+    }
+    this.endedSessions.add(id);
   }
 
   // ==========================================================================
@@ -687,6 +754,7 @@ export class MuxSession {
       this.closeSubConnection(id);
     }
     this.connections.clear();
+    this.endedSessions.clear();
     this.stats.activeConnections = 0;
 
     safeCloseWebSocket(this.webSocket);
