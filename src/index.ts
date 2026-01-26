@@ -20,6 +20,7 @@
 import type { WorkerEnv } from './types';
 import { getConfig } from './config';
 import { isValidUUID } from './utils/uuid';
+import { createLogger, initLogger, LogLevel } from './utils/logger';
 import { handleTunnelOverWS } from './handlers/connection';
 import { createUUIDValidator } from './core/header';
 import { 
@@ -29,6 +30,8 @@ import {
   createRemnawaveProvider,
   type UUIDProviderManager 
 } from './providers';
+
+const log = createLogger('Init');
 
 // ============================================================================
 // 安全工具函数
@@ -123,7 +126,7 @@ export default {
       return await handleHttpRequest(request, validUUIDs, uuidManager, env);
     } catch (err) {
       const error = err as Error;
-      console.error('Worker error:', error);
+      log.error('Worker error:', error);
       return new Response(`Error: ${error.message}`, { status: 500 });
     }
   },
@@ -263,8 +266,9 @@ async function handleStatsPath(manager: UUIDProviderManager): Promise<Response> 
 /**
  * 初始化 UUID 提供者管理器
  * 
- * 所有注册的提供者返回的 UUID 都可以用于连接验证
- * UUID 列表使用 Cache API 缓存，解决 Worker 无状态问题
+ * 分层缓存架构：
+ * - L1: Cache API（边缘节点，始终启用）
+ * - L2: KV 或 D1（持久化，可选，KV 优先）
  * 
  * 注意：
  * - 默认 UUID 仅在开发模式（DEV_MODE=true）下生效
@@ -282,16 +286,22 @@ function initializeUUIDManager(
 ): UUIDProviderManager {
   const devMode = isDevMode(env);
   
+  // 初始化日志级别：开发模式 DEBUG，生产模式 WARN
+  // 可通过 LOG_LEVEL 环境变量覆盖：OFF, ERROR, WARN, INFO, DEBUG
+  initLogger(devMode, env.LOG_LEVEL);
+  
   // 生产模式下不使用默认 UUID，传入空字符串
   // 开发模式下使用 UUID 环境变量作为默认值
   const effectiveDefaultUUID = devMode ? defaultUUID : '';
-  const manager = createUUIDManager(effectiveDefaultUUID, cacheTTL);
   
-  if (devMode) {
-    console.log('[Init] Development mode: default UUID enabled');
-  } else {
-    console.log('[Init] Production mode: default UUID disabled, using API providers only');
-  }
+  // 分层缓存：L1=CacheAPI, L2=KV/D1（可选）
+  const manager = createUUIDManager(effectiveDefaultUUID, {
+    cacheTTL,
+    kv: env.UUID_KV,  // 如果配置了 KV，作为 L2
+    d1: env.UUID_D1,  // 如果没有 KV 但有 D1，作为 L2
+  });
+  
+  log.info(devMode ? 'Dev mode' : 'Prod mode', `Cache: ${manager.getCacheType()}`);
 
   // =========================================================================
   // Remnawave API 提供者
@@ -304,7 +314,7 @@ function initializeUUIDManager(
   );
   if (remnawaveProvider) {
     manager.register(remnawaveProvider);
-    console.log('[Init] Remnawave provider registered');
+    log.debug('Remnawave provider registered');
   }
 
   // =========================================================================

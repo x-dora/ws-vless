@@ -55,10 +55,43 @@
 	 * 
 	 * 可选变量:
 	 * - UUID_CACHE_TTL: 缓存时间（秒），默认 300
-	 * - DEV_MODE: 设置为 "true" 启用开发模式（一般不需要）
+	 * - DEV_MODE: 设置为 "true" 启用开发模式
 	 * 
 	 * 本地开发：使用 .dev.vars 文件设置所有变量
 	 */
+	/**
+	 * 分层缓存配置
+	 * 
+	 * L1: Cache API（边缘节点，始终启用）
+	 * L2: KV 或 D1（持久化，可选）
+	 * 
+	 * 读取顺序：L1 → L2 → 原始请求
+	 * 写入策略：始终写 L1，L2 有间隔限制避免频繁写入
+	 * 
+	 * 如果同时配置了 KV 和 D1，优先使用 KV 作为 L2
+	 */
+	/**
+	 * KV 命名空间绑定（可选，作为 L2 缓存）
+	 * 
+	 * 创建命名空间: wrangler kv namespace create UUID_KV
+	 * https://developers.cloudflare.com/kv/
+	 */
+	// "kv_namespaces": [
+	// 	{ "binding": "UUID_KV", "id": "<your-kv-namespace-id>" }
+	// ],
+	/**
+	 * D1 数据库绑定（可选，作为 L2 缓存，KV 优先）
+	 * 
+	 * 创建数据库: wrangler d1 create uuid-cache
+	 * 初始化表:
+	 *   wrangler d1 execute uuid-cache --command="CREATE TABLE IF NOT EXISTS uuid_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)"
+	 *   wrangler d1 execute uuid-cache --command="CREATE INDEX IF NOT EXISTS idx_expires_at ON uuid_cache(expires_at)"
+	 * 
+	 * https://developers.cloudflare.com/d1/
+	 */
+	// "d1_databases": [
+	// 	{ "binding": "UUID_D1", "database_name": "uuid-cache", "database_id": "<your-d1-database-id>" }
+	// ],
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/

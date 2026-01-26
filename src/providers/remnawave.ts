@@ -4,16 +4,21 @@
  * 从 Remnawave 面板 API 获取用户 UUID 列表
  * 文档: https://docs.rw/api#tag/users-controller/GET/api/users
  * 
- * 使用 Worker Cache API 进行缓存，解决 Worker 无状态问题
+ * 使用 Cache API 进行本地缓存，解决 Worker 无状态问题
  */
 
 import type { UUIDProvider, UUIDProviderConfig } from '../types';
 import { isValidUUID } from '../utils/uuid';
+import { createLogger } from '../utils/logger';
 import { 
-  getCachedUUIDs, 
-  setCachedUUIDs,
+  CacheAPIStore,
   DEFAULT_CACHE_CONFIG,
 } from '../cache';
+
+const log = createLogger('Remnawave');
+
+// 使用 Cache API 作为提供者级别的缓存
+const providerCache = new CacheAPIStore();
 
 // ============================================================================
 // Remnawave API 响应类型
@@ -108,19 +113,19 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
    */
   async fetchUUIDs(): Promise<string[]> {
     // 1. 尝试从缓存获取
-    const cached = await getCachedUUIDs(this.name);
+    const cached = await providerCache.getCachedUUIDs(this.name);
     if (cached) {
-      console.log(`[${this.name}] Cache hit: ${cached.uuids.length} UUIDs`);
+      log.debug(`Cache hit: ${cached.uuids.length} UUIDs`);
       return cached.uuids;
     }
 
     // 2. 缓存未命中，从 API 获取
-    console.log(`[${this.name}] Cache miss, fetching from API...`);
+    log.debug('Cache miss, fetching from API...');
     const uuids = await this.fetchFromApi();
 
     // 3. 存入缓存
     if (uuids.length > 0) {
-      await setCachedUUIDs(this.name, uuids, this.cacheTTL);
+      await providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
     }
 
     return uuids;
@@ -178,14 +183,14 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
         })
         .map(user => user.vlessUuid.toLowerCase());
 
-      console.log(`[${this.name}] Fetched ${uuids.length} UUIDs from API`);
+      log.info(`Fetched ${uuids.length} UUIDs from API`);
       return uuids;
 
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error(`[${this.name}] Request timeout after ${timeout}ms`);
+        log.error(`Request timeout after ${timeout}ms`);
       } else {
-        console.error(`[${this.name}] API request failed:`, error);
+        log.error('API request failed:', error);
       }
       throw error;
     } finally {
@@ -223,7 +228,7 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
       throw new Error(data.error || data.message);
     }
 
-    console.warn(`[${this.name}] Unknown response format:`, Object.keys(data));
+    log.warn('Unknown response format:', Object.keys(data));
     return [];
   }
 
@@ -249,10 +254,13 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
    * 强制刷新缓存
    */
   async refresh(): Promise<string[]> {
-    console.log(`[${this.name}] Force refreshing...`);
+    log.debug('Force refreshing...');
+    // 先删除旧缓存
+    await providerCache.deleteCachedUUIDs(this.name);
+    // 重新获取
     const uuids = await this.fetchFromApi();
     if (uuids.length > 0) {
-      await setCachedUUIDs(this.name, uuids, this.cacheTTL);
+      await providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
     }
     return uuids;
   }
@@ -280,7 +288,7 @@ export function createRemnawaveProvider(
 ): RemnawaveUUIDProvider | null {
   // 如果地址或密钥为空，不创建提供者
   if (!apiUrl || !apiKey) {
-    console.log('[Remnawave] Skipped: API URL or Key not configured');
+    log.debug('Skipped: API URL or Key not configured');
     return null;
   }
 
@@ -288,7 +296,7 @@ export function createRemnawaveProvider(
   try {
     new URL(apiUrl);
   } catch {
-    console.error('[Remnawave] Invalid API URL:', apiUrl);
+    log.error('Invalid API URL:', apiUrl);
     return null;
   }
 
