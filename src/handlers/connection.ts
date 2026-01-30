@@ -80,10 +80,9 @@ export async function handleTunnelOverWS(
   /**
    * 日志函数 - 使用统一日志系统
    * 根据 LOG_LEVEL 环境变量控制输出级别
+   * 使用动态前缀，在地址信息更新后自动反映
    */
-  const getLog = () => createConnLog(`${address}:${portWithRandomLog}`);
-  // 兼容性 log 函数（用于传递给其他模块）
-  const log: ConnLogFunction = getLog();
+  const log: ConnLogFunction = createConnLog(() => `${address}:${portWithRandomLog}`);
 
   // 获取早期数据（WebSocket 0-RTT）
   const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';

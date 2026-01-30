@@ -198,33 +198,33 @@ export const tcpLogger = createLogger('TCP');
  * 创建带上下文的日志函数
  * 用于 connection.ts 中的连接处理日志
  * 
- * @param prefix 日志前缀（如 "address:port"）
+ * @param getPrefix 获取日志前缀的函数（动态获取，如 () => "address:port"）
  * @returns 日志函数对象
  */
-export function createConnLog(prefix: string) {
+export function createConnLog(getPrefix: () => string) {
   return {
     /** 调试日志（仅开发环境） */
     debug: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.DEBUG) {
-        console.log(`[DEBUG] [Conn] [${prefix}] ${info}`, event || '');
+        console.log(`[${getPrefix()}] ${info}`, event || '');
       }
     },
     /** 信息日志 */
     info: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.INFO) {
-        console.log(`[INFO] [Conn] [${prefix}] ${info}`, event || '');
+        console.log(`[${getPrefix()}] ${info}`, event || '');
       }
     },
     /** 警告日志 */
     warn: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.WARN) {
-        console.warn(`[WARN] [Conn] [${prefix}] ${info}`, event || '');
+        console.warn(`[${getPrefix()}] ${info}`, event || '');
       }
     },
     /** 错误日志 */
     error: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.ERROR) {
-        console.error(`[ERROR] [Conn] [${prefix}] ${info}`, event || '');
+        console.error(`[${getPrefix()}] ${info}`, event || '');
       }
     },
   };
