@@ -58,6 +58,15 @@ export interface WorkerEnv {
   LOG_LEVEL?: string;
 
   // =========================================================================
+  // 流量统计上报配置
+  // =========================================================================
+  
+  /** 流量上报端点 URL (如: http://your-server:2222/worker/report) */
+  STATS_REPORT_URL?: string;
+  /** 流量上报认证 Token */
+  STATS_REPORT_TOKEN?: string;
+
+  // =========================================================================
   // 缓存配置（分层缓存）
   // L1: Cache API（始终启用）
   // L2: KV 或 D1（可选，KV 优先）
@@ -95,6 +104,8 @@ export interface HeaderResult {
   isUDP?: boolean;
   /** 是否为 Mux 多路复用连接 */
   isMux?: boolean;
+  /** 用户 UUID（用于流量统计） */
+  userUUID?: string;
 }
 
 /**
@@ -184,9 +195,24 @@ export interface RemoteSocketWrapper {
 }
 
 /**
- * 日志函数类型
+ * 日志函数类型（旧版，保留兼容性）
  */
 export type LogFunction = (info: string, event?: string) => void;
+
+/**
+ * 连接日志函数类型（支持日志级别）
+ * 用于 connection.ts 和 tcp.ts 中的连接处理日志
+ */
+export interface ConnLogFunction {
+  /** 调试日志（仅开发环境显示） */
+  debug: (info: string, event?: string) => void;
+  /** 信息日志 */
+  info: (info: string, event?: string) => void;
+  /** 警告日志 */
+  warn: (info: string, event?: string) => void;
+  /** 错误日志 */
+  error: (info: string, event?: string) => void;
+}
 
 // ============================================================================
 // 配置输出类型

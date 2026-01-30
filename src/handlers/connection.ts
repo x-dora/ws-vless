@@ -3,7 +3,7 @@
  * 处理代理协议的 WebSocket 连接（支持普通连接和 Mux 多路复用）
  */
 
-import type { RemoteSocketWrapper, LogFunction } from '../types';
+import type { RemoteSocketWrapper, ConnLogFunction } from '../types';
 import { 
   processHeader, 
   createResponseHeader,
@@ -14,6 +14,12 @@ import { makeReadableWebSocketStream } from '../utils/_websocket';
 import { handleTCPOutBound } from './tcp';
 import { handleUDPOutBound, type UDPWriteFunction } from './udp';
 import { createMuxSession, type MuxSession } from './mux-session';
+import { 
+  TrafficTracker, 
+  createStatsReporter, 
+  type StatsReporterConfig 
+} from '../services/stats-reporter';
+import { createConnLog } from '../utils/logger';
 
 // ============================================================================
 // 处理配置
@@ -31,6 +37,10 @@ export interface ConnectionHandlerOptions {
   dnsServer?: string;
   /** 是否启用 Mux 多路复用 */
   muxEnabled?: boolean;
+  /** 流量上报配置（可选） */
+  statsReporter?: StatsReporterConfig;
+  /** waitUntil 函数（用于后台任务） */
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 // ============================================================================
@@ -48,7 +58,7 @@ export async function handleTunnelOverWS(
   request: Request,
   options: ConnectionHandlerOptions
 ): Promise<Response> {
-  const { validateUUID, proxyIP, dnsServer, muxEnabled = true } = options;
+  const { validateUUID, proxyIP, dnsServer, muxEnabled = true, statsReporter, waitUntil } = options;
 
   // 创建 WebSocket 对
   const webSocketPair = new WebSocketPair();
@@ -61,12 +71,19 @@ export async function handleTunnelOverWS(
   let address = '';
   let portWithRandomLog = '';
 
+  // 流量追踪器和上报函数
+  let trafficTracker: TrafficTracker | null = null;
+  const reportStats = statsReporter 
+    ? createStatsReporter(statsReporter) 
+    : async () => true;
+
   /**
-   * 日志函数
+   * 日志函数 - 使用统一日志系统
+   * 根据 LOG_LEVEL 环境变量控制输出级别
    */
-  const log: LogFunction = (info: string, event?: string) => {
-    console.log(`[${address}:${portWithRandomLog}] ${info}`, event || '');
-  };
+  const getLog = () => createConnLog(`${address}:${portWithRandomLog}`);
+  // 兼容性 log 函数（用于传递给其他模块）
+  const log: ConnLogFunction = getLog();
 
   // 获取早期数据（WebSocket 0-RTT）
   const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
@@ -96,7 +113,7 @@ export async function handleTunnelOverWS(
     .pipeTo(
       new WritableStream({
         async write(chunk: ArrayBuffer, controller) {
-          // 处理 Mux 数据
+          // 处理 Mux 数据（流量由 muxSession 内部统计，关闭时获取）
           if (muxSession) {
             await muxSession.processData(chunk);
             return;
@@ -109,6 +126,8 @@ export async function handleTunnelOverWS(
 
           // 如果已有远程连接，直接转发数据
           if (remoteSocketWrapper.value) {
+            // 追踪上行流量
+            trafficTracker?.addUplink(chunk.byteLength);
             const writer = remoteSocketWrapper.value.writable.getWriter();
             await writer.write(chunk);
             writer.releaseLock();
@@ -125,6 +144,7 @@ export async function handleTunnelOverWS(
             protocolVersion = new Uint8Array([0, 0]),
             isUDP,
             isMux,
+            userUUID,
           } = processHeader(chunk, validateUUID);
 
           // 更新日志信息
@@ -137,6 +157,15 @@ export async function handleTunnelOverWS(
             throw new Error(message);
           }
 
+          // 创建流量追踪器（如果启用了统计上报且有用户标识）
+          if (statsReporter?.enabled && userUUID) {
+            trafficTracker = new TrafficTracker(
+              userUUID, 
+              `${addressRemote}:${portRemote}`,
+              connectionType as 'tcp' | 'udp' | 'mux'
+            );
+          }
+
           // 创建响应头
           const responseHeader = createResponseHeader(protocolVersion);
 
@@ -145,8 +174,8 @@ export async function handleTunnelOverWS(
 
           // 根据连接类型处理
           if (isMux && muxEnabled) {
-            // Mux 多路复用连接
-            log('Mux connection established');
+            // Mux 多路复用连接（DEBUG 级别日志）
+            log.debug('Mux connection established');
             muxSession = createMuxSession({
               webSocket,
               responseHeader,
@@ -186,30 +215,73 @@ export async function handleTunnelOverWS(
               webSocket,
               responseHeader,
               log,
-              proxyIP
+              proxyIP,
+              trafficTracker
             );
           }
         },
 
         close() {
-          log('ReadableWebSocketStream closed');
-          // 清理 Mux 会话
+          log.debug('ReadableWebSocketStream closed');
+          // 清理 Mux 会话并获取统计
           if (muxSession) {
+            // 从 Mux 会话获取流量统计
+            const muxStats = muxSession.getStats();
+            if (trafficTracker) {
+              // bytesReceived = 上行（客户端发送的数据）
+              // bytesSent = 下行（发送给客户端的数据）
+              trafficTracker.addUplink(muxStats.bytesReceived);
+              trafficTracker.addDownlink(muxStats.bytesSent);
+            }
             muxSession.close();
+          }
+          // 上报流量统计（使用 waitUntil 确保请求完成）
+          if (trafficTracker) {
+            const stats = trafficTracker.getStats();
+            log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink}`);
+            if (!trafficTracker.isReported() && trafficTracker.hasTraffic()) {
+              trafficTracker.markReported();
+              const reportPromise = reportStats(stats)
+                .then((ok) => ok ? log.debug('Stats reported') : log.warn('Stats report failed'))
+                .catch((e) => log.error(`Stats report error: ${e}`));
+              // 使用 waitUntil 确保上报请求在 Worker 结束后继续执行
+              if (waitUntil) {
+                waitUntil(reportPromise);
+              }
+            }
           }
         },
 
         abort(reason) {
-          log('ReadableWebSocketStream aborted', JSON.stringify(reason));
-          // 清理 Mux 会话
+          log.warn('ReadableWebSocketStream aborted', JSON.stringify(reason));
+          // 清理 Mux 会话并获取统计
           if (muxSession) {
+            const muxStats = muxSession.getStats();
+            if (trafficTracker) {
+              trafficTracker.addUplink(muxStats.bytesReceived);
+              trafficTracker.addDownlink(muxStats.bytesSent);
+            }
             muxSession.close();
+          }
+          // 上报流量统计（使用 waitUntil 确保请求完成）
+          if (trafficTracker) {
+            const stats = trafficTracker.getStats();
+            log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink}`);
+            if (!trafficTracker.isReported() && trafficTracker.hasTraffic()) {
+              trafficTracker.markReported();
+              const reportPromise = reportStats(stats)
+                .then((ok) => ok ? log.debug('Stats reported') : log.warn('Stats report failed'))
+                .catch((e) => log.error(`Stats report error: ${e}`));
+              if (waitUntil) {
+                waitUntil(reportPromise);
+              }
+            }
           }
         },
       })
     )
     .catch((err) => {
-      log('ReadableWebSocketStream pipeTo error', String(err));
+      log.error('ReadableWebSocketStream pipeTo error', String(err));
     });
 
   // 返回 WebSocket 升级响应

@@ -1,0 +1,39 @@
+{
+  "users": [
+    {
+      "username": "3f09acc0-8d64-4fdb-bd18-d86ff563fdb6",
+      "uplink": 9271,
+      "downlink": 20169,
+      "connections": 273,
+      "last_seen": 1769781228.3508437
+    },
+    {
+      "username": "GHk6D3QtqKQvrf49",
+      "uplink": 0,
+      "downlink": 0,
+      "connections": 2,
+      "last_seen": 1769776564.0780058
+    },
+    {
+      "username": "a292be09-8bfc-42e3-9ae8-885f8e6c5d5e",
+      "uplink": 0,
+      "downlink": 0,
+      "connections": 225,
+      "last_seen": 1769779732.4178553
+    }
+  ],
+  "mappings": {},
+  "inbound_stats": {
+    "worker": {
+      "uplink": 11290,
+      "downlink": 25158
+    }
+  },
+  "outbound_stats": {
+    "worker": {
+      "uplink": 11290,
+      "downlink": 25158
+    }
+  },
+  "saved_at": "2026-01-30T21:53:48.864971"
+}

@@ -187,3 +187,45 @@ export const cacheLogger = createLogger('Cache');
 export const muxLogger = createLogger('Mux');
 export const initLogger$ = createLogger('Init');
 export const providerLogger = createLogger('Provider');
+export const connLogger = createLogger('Conn');
+export const tcpLogger = createLogger('TCP');
+
+// ============================================================================
+// 连接日志辅助函数
+// ============================================================================
+
+/**
+ * 创建带上下文的日志函数
+ * 用于 connection.ts 中的连接处理日志
+ * 
+ * @param prefix 日志前缀（如 "address:port"）
+ * @returns 日志函数对象
+ */
+export function createConnLog(prefix: string) {
+  return {
+    /** 调试日志（仅开发环境） */
+    debug: (info: string, event?: string) => {
+      if (globalLogLevel >= LogLevel.DEBUG) {
+        console.log(`[DEBUG] [Conn] [${prefix}] ${info}`, event || '');
+      }
+    },
+    /** 信息日志 */
+    info: (info: string, event?: string) => {
+      if (globalLogLevel >= LogLevel.INFO) {
+        console.log(`[INFO] [Conn] [${prefix}] ${info}`, event || '');
+      }
+    },
+    /** 警告日志 */
+    warn: (info: string, event?: string) => {
+      if (globalLogLevel >= LogLevel.WARN) {
+        console.warn(`[WARN] [Conn] [${prefix}] ${info}`, event || '');
+      }
+    },
+    /** 错误日志 */
+    error: (info: string, event?: string) => {
+      if (globalLogLevel >= LogLevel.ERROR) {
+        console.error(`[ERROR] [Conn] [${prefix}] ${info}`, event || '');
+      }
+    },
+  };
+}

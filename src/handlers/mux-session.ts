@@ -12,7 +12,7 @@
 // @ts-ignore - Cloudflare Workers 特有模块
 import { connect } from 'cloudflare:sockets';
 
-import type { LogFunction } from '../types';
+import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
 import {
   MuxStatus,
@@ -210,7 +210,7 @@ export interface SessionStats {
 export interface MuxSessionOptions {
   webSocket: WebSocket;
   responseHeader: Uint8Array;
-  log: LogFunction;
+  log: ConnLogFunction;
   proxyIP?: string;
   dnsServer?: string;
   timeout?: number;
@@ -243,7 +243,7 @@ export class MuxSession {
   // WebSocket 相关
   private webSocket: WebSocket;
   private writeQueue: WriteQueue;
-  private log: LogFunction;
+  private log: ConnLogFunction;
   
   // 配置
   private proxyIP?: string;
@@ -331,13 +331,13 @@ export class MuxSession {
         if (result.message?.includes('Incomplete') || result.message?.includes('too short')) {
           break;
         }
-        this.log(`Mux parse error: ${result.message}`);
+        this.log.warn(`Mux parse error: ${result.message}`);
         break;
       }
 
       const { frame } = result;
       if (frame.frameLength <= 0) {
-        this.log(`Mux invalid frameLength: ${frame.frameLength}`);
+        this.log.warn(`Mux invalid frameLength: ${frame.frameLength}`);
         break;
       }
       
@@ -353,7 +353,7 @@ export class MuxSession {
     // 处理所有帧
     for (const frame of frames) {
       this.handleFrame(frame).catch(err => {
-        this.log(`Mux handleFrame error: ${err}`);
+        this.log.error(`Mux handleFrame error: ${err}`);
       });
     }
   }
@@ -404,16 +404,16 @@ export class MuxSession {
     if (isTCP) {
       if (this.stats.limitReached || this.stats.totalTCPConnections >= this.maxSubrequests) {
         this.stats.limitReached = true;
-        this.log(`Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
+        this.log.warn(`Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
         this.sendEndFrame(id);
         this.markSessionEnded(id);
         return;
       }
       this.stats.totalTCPConnections++;
-      this.log(`Mux New: id=${id}, ${conn.address}:${conn.port} [${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
+      this.log.debug(`Mux New: id=${id}, ${conn.address}:${conn.port} [${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
     } else {
       this.stats.totalUDPConnections++;
-      this.log(`Mux New (UDP): id=${id}, ${conn.address}:${conn.port}`);
+      this.log.debug(`Mux New (UDP): id=${id}, ${conn.address}:${conn.port}`);
     }
 
     // 创建子连接
@@ -434,11 +434,11 @@ export class MuxSession {
     // 异步处理连接
     if (isTCP) {
       this.handleTCPSubConnection(subConn, data).catch(err => {
-        this.log(`TCP error id=${id}: ${err}`);
+        this.log.error(`TCP error id=${id}: ${err}`);
       });
     } else {
       this.handleUDPSubConnection(subConn, data).catch(err => {
-        this.log(`UDP error id=${id}: ${err}`);
+        this.log.error(`UDP error id=${id}: ${err}`);
       });
     }
   }
@@ -466,7 +466,7 @@ export class MuxSession {
           createTimeoutPromise(CONNECT_TIMEOUT_MS)
         ]);
       } catch (error) {
-        this.log(`TCP connect error id=${subConn.id}: ${error}`);
+        this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
         this.sendEndFrame(subConn.id);
         subConn.closed = true;
         try { tcpSocket.close(); } catch {}
@@ -492,7 +492,7 @@ export class MuxSession {
       this.pipeRemoteToWebSocket(subConn.id, tcpSocket);
 
     } catch (error) {
-      this.log(`TCP error id=${subConn.id}: ${error}`);
+      this.log.error(`TCP error id=${subConn.id}: ${error}`);
       this.sendEndFrame(subConn.id);
       subConn.closed = true;
       this.removeConnection(subConn.id);
@@ -533,7 +533,7 @@ export class MuxSession {
     if (!data || data.length === 0) return;
 
     if (subConn.port !== 53) {
-      this.log(`UDP only supports DNS (port 53), got ${subConn.port}`);
+      this.log.warn(`UDP only supports DNS (port 53), got ${subConn.port}`);
       this.sendEndFrame(subConn.id);
       this.removeConnection(subConn.id);
       return;
@@ -558,9 +558,9 @@ export class MuxSession {
       const dnsResult = await response.arrayBuffer();
       
       this.sendDataToWebSocket(id, new Uint8Array(dnsResult));
-      this.log(`DNS success: ${dnsResult.byteLength} bytes`);
+      this.log.debug(`DNS success: ${dnsResult.byteLength} bytes`);
     } catch (error) {
-      this.log(`DNS error: ${error}`);
+      this.log.error(`DNS error: ${error}`);
     }
   }
 
@@ -595,7 +595,7 @@ export class MuxSession {
             await this.writeToSocket(subConn, data);
           } catch (error) {
             if (!subConn.closed) {
-              this.log(`TCP write error id=${id}: ${error}`);
+              this.log.error(`TCP write error id=${id}: ${error}`);
               this.closeSubConnection(id);
             }
           }
@@ -624,7 +624,7 @@ export class MuxSession {
       return;
     }
 
-    this.log(`Mux End: id=${id}`);
+    this.log.debug(`Mux End: id=${id}`);
 
     // 先发送最后的数据
     if (data && data.length > 0 && subConn.writer && subConn.ready && !subConn.closed) {

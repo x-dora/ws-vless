@@ -3,7 +3,7 @@
  * 提供 WebSocket 相关的辅助函数
  */
 
-import { WS_READY_STATE } from '../types';
+import { WS_READY_STATE, type ConnLogFunction } from '../types';
 
 // ============================================================================
 // WebSocket 操作
@@ -22,8 +22,8 @@ export function safeCloseWebSocket(socket: WebSocket): void {
     ) {
       socket.close();
     }
-  } catch (error) {
-    console.error('safeCloseWebSocket error:', error);
+  } catch {
+    // 静默处理关闭异常，避免生产环境日志污染
   }
 }
 
@@ -45,13 +45,13 @@ export function isWebSocketOpen(socket: WebSocket): boolean {
  * 将 WebSocket 消息转换为 ReadableStream
  * @param webSocketServer WebSocket 服务端实例
  * @param earlyDataHeader 早期数据头（用于 ws 0-RTT）
- * @param log 日志函数
+ * @param log 日志函数（支持日志级别）
  * @returns ReadableStream 可读流
  */
 export function makeReadableWebSocketStream(
   webSocketServer: any,
   earlyDataHeader: string,
-  log: (info: string, event?: string) => void
+  log: ConnLogFunction
 ): ReadableStream<ArrayBuffer> {
   let readableStreamCancel = false;
 
@@ -79,7 +79,7 @@ export function makeReadableWebSocketStream(
 
       // 监听 WebSocket 错误事件
       webSocketServer.addEventListener('error', (err: Event) => {
-        log('WebSocket server error');
+        log.error('WebSocket server error');
         controller.error(err);
       });
 
@@ -104,7 +104,7 @@ export function makeReadableWebSocketStream(
       if (readableStreamCancel) {
         return;
       }
-      log(`ReadableStream was canceled, due to ${reason}`);
+      log.debug(`ReadableStream was canceled, due to ${reason}`);
       readableStreamCancel = true;
       safeCloseWebSocket(webSocketServer);
     },

@@ -6,6 +6,7 @@
  */
 
 import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
+import { cacheLogger } from '../utils/logger';
 
 /**
  * 缓存键前缀
@@ -47,7 +48,7 @@ export class CacheAPIStore implements CacheStore {
       
       return data;
     } catch (error) {
-      console.error(`[CacheAPI] Get UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[CacheAPI] Get UUIDs error (${provider}):`, error);
       return null;
     }
   }
@@ -74,7 +75,7 @@ export class CacheAPIStore implements CacheStore {
 
       await cache.put(request, response);
     } catch (error) {
-      console.error(`[CacheAPI] Set UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[CacheAPI] Set UUIDs error (${provider}):`, error);
     }
   }
 
@@ -83,7 +84,7 @@ export class CacheAPIStore implements CacheStore {
       const cache = caches.default;
       return await cache.delete(new Request(getCacheKey(`uuids:${provider}`)));
     } catch (error) {
-      console.error(`[CacheAPI] Delete UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[CacheAPI] Delete UUIDs error (${provider}):`, error);
       return false;
     }
   }
@@ -104,7 +105,7 @@ export class CacheAPIStore implements CacheStore {
       
       return data;
     } catch (error) {
-      console.error('[CacheAPI] Get merged cache error:', error);
+      cacheLogger.error('[CacheAPI] Get merged cache error:', error);
       return null;
     }
   }
@@ -130,7 +131,7 @@ export class CacheAPIStore implements CacheStore {
 
       await cache.put(request, response);
     } catch (error) {
-      console.error('[CacheAPI] Set merged cache error:', error);
+      cacheLogger.error('[CacheAPI] Set merged cache error:', error);
     }
   }
 
@@ -139,7 +140,7 @@ export class CacheAPIStore implements CacheStore {
       const cache = caches.default;
       return await cache.delete(new Request(getCacheKey('uuids:merged')));
     } catch (error) {
-      console.error('[CacheAPI] Delete merged cache error:', error);
+      cacheLogger.error('[CacheAPI] Delete merged cache error:', error);
       return false;
     }
   }

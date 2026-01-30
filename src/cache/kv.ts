@@ -6,6 +6,7 @@
  */
 
 import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
+import { cacheLogger } from '../utils/logger';
 
 /**
  * KV 缓存存储实现
@@ -34,7 +35,7 @@ export class KVStore implements CacheStore {
       
       return data;
     } catch (error) {
-      console.error(`[KV] Get UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[KV] Get UUIDs error (${provider}):`, error);
       return null;
     }
   }
@@ -53,7 +54,7 @@ export class KVStore implements CacheStore {
         expirationTtl: ttlSeconds,
       });
     } catch (error) {
-      console.error(`[KV] Set UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[KV] Set UUIDs error (${provider}):`, error);
     }
   }
 
@@ -62,7 +63,7 @@ export class KVStore implements CacheStore {
       await this.kv.delete(`uuids:${provider}`);
       return true;
     } catch (error) {
-      console.error(`[KV] Delete UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[KV] Delete UUIDs error (${provider}):`, error);
       return false;
     }
   }
@@ -78,7 +79,7 @@ export class KVStore implements CacheStore {
       
       return data;
     } catch (error) {
-      console.error('[KV] Get merged cache error:', error);
+      cacheLogger.error('[KV] Get merged cache error:', error);
       return null;
     }
   }
@@ -96,7 +97,7 @@ export class KVStore implements CacheStore {
         expirationTtl: ttlSeconds,
       });
     } catch (error) {
-      console.error('[KV] Set merged cache error:', error);
+      cacheLogger.error('[KV] Set merged cache error:', error);
     }
   }
 
@@ -105,7 +106,7 @@ export class KVStore implements CacheStore {
       await this.kv.delete('uuids:merged');
       return true;
     } catch (error) {
-      console.error('[KV] Delete merged cache error:', error);
+      cacheLogger.error('[KV] Delete merged cache error:', error);
       return false;
     }
   }

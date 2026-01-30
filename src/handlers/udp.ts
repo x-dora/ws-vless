@@ -3,7 +3,7 @@
  * 处理代理 UDP 连接（主要用于 DNS 查询）
  */
 
-import type { LogFunction } from '../types';
+import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
 import { DEFAULT_DNS_SERVER } from '../config';
 
@@ -29,7 +29,7 @@ export type UDPWriteFunction = (chunk: Uint8Array) => void;
 export async function handleUDPOutBound(
   webSocket: WebSocket,
   responseHeader: Uint8Array,
-  log: LogFunction,
+  log: ConnLogFunction,
   dnsServer: string = DEFAULT_DNS_SERVER
 ): Promise<{ write: UDPWriteFunction }> {
   let isHeaderSent = false;
@@ -88,7 +88,7 @@ export async function handleUDPOutBound(
 
           // 发送响应
           if (webSocket.readyState === WS_READY_STATE.OPEN) {
-            log(`DoH success, DNS response length: ${udpSize}`);
+            log.debug(`DoH success, DNS response length: ${udpSize}`);
 
             if (isHeaderSent) {
               // 后续响应不需要协议头
@@ -109,7 +109,7 @@ export async function handleUDPOutBound(
       })
     )
     .catch((error) => {
-      log(`DNS UDP error: ${error}`);
+      log.error(`DNS UDP error: ${error}`);
     });
 
   // 获取写入器

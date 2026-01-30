@@ -29,7 +29,7 @@ const providerCache = new CacheAPIStore();
  * 根据 API 文档定义
  */
 interface RemnawaveUser {
-  /** 用户 UUID（API 字段名为 vlessUuid） */
+  /** 用户 VLESS UUID（用于认证和流量统计） */
   vlessUuid: string;
   /** 用户名 */
   username?: string;
@@ -165,23 +165,25 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
       const users = this.parseUsers(data);
 
       // 过滤并提取 UUID（使用 vlessUuid 字段）
-      const uuids = users
-        .filter(user => {
-          // 验证 vlessUuid 格式
-          if (!user.vlessUuid || !isValidUUID(user.vlessUuid)) {
-            return false;
-          }
-          // 如果只获取启用的用户
-          if (enabledOnly && user.enabled === false) {
-            return false;
-          }
-          // 检查状态（如果有）
-          if (user.status && user.status.toLowerCase() === 'disabled') {
-            return false;
-          }
-          return true;
-        })
-        .map(user => user.vlessUuid.toLowerCase());
+      const uuids: string[] = [];
+      
+      for (const user of users) {
+        // 验证 vlessUuid 格式
+        if (!user.vlessUuid || !isValidUUID(user.vlessUuid)) {
+          continue;
+        }
+        // 如果只获取启用的用户
+        if (enabledOnly && user.enabled === false) {
+          continue;
+        }
+        // 检查状态（如果有）
+        if (user.status && user.status.toLowerCase() === 'disabled') {
+          continue;
+        }
+        
+        const normalizedUuid = user.vlessUuid.toLowerCase();
+        uuids.push(normalizedUuid);
+      }
 
       log.info(`Fetched ${uuids.length} UUIDs from API`);
       return uuids;

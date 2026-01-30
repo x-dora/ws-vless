@@ -17,6 +17,7 @@
  */
 
 import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
+import { cacheLogger } from '../utils/logger';
 
 /**
  * D1 数据库缓存存储实现
@@ -68,7 +69,7 @@ export class D1Store implements CacheStore {
       if (!result) return null;
       return JSON.parse(result.value) as UUIDCacheData;
     } catch (error) {
-      console.error(`[D1] Get UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[D1] Get UUIDs error (${provider}):`, error);
       return null;
     }
   }
@@ -95,7 +96,7 @@ export class D1Store implements CacheStore {
         now
       ).run();
     } catch (error) {
-      console.error(`[D1] Set UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[D1] Set UUIDs error (${provider}):`, error);
     }
   }
 
@@ -107,7 +108,7 @@ export class D1Store implements CacheStore {
         .run();
       return true;
     } catch (error) {
-      console.error(`[D1] Delete UUIDs error (${provider}):`, error);
+      cacheLogger.error(`[D1] Delete UUIDs error (${provider}):`, error);
       return false;
     }
   }
@@ -123,7 +124,7 @@ export class D1Store implements CacheStore {
       if (!result) return null;
       return JSON.parse(result.value) as MergedUUIDCache;
     } catch (error) {
-      console.error('[D1] Get merged cache error:', error);
+      cacheLogger.error('[D1] Get merged cache error:', error);
       return null;
     }
   }
@@ -149,7 +150,7 @@ export class D1Store implements CacheStore {
         now
       ).run();
     } catch (error) {
-      console.error('[D1] Set merged cache error:', error);
+      cacheLogger.error('[D1] Set merged cache error:', error);
     }
   }
 
@@ -161,7 +162,7 @@ export class D1Store implements CacheStore {
         .run();
       return true;
     } catch (error) {
-      console.error('[D1] Delete merged cache error:', error);
+      cacheLogger.error('[D1] Delete merged cache error:', error);
       return false;
     }
   }

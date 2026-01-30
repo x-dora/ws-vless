@@ -112,13 +112,24 @@ export default {
       const upgradeHeader = request.headers.get('Upgrade');
 
       if (upgradeHeader === 'websocket') {
+        const proxyIP = config.proxyIP !== "" ? config.proxyIP : (request.cf?.colo + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase()
         // 处理 WebSocket 代理连接
         const muxEnabled = env.MUX_ENABLED !== 'false'; // 默认启用
+        
+        // 流量上报配置
+        const statsReporter = env.STATS_REPORT_URL ? {
+          endpoint: env.STATS_REPORT_URL,
+          authToken: env.STATS_REPORT_TOKEN,
+          enabled: true,
+        } : undefined;
+
         return await handleTunnelOverWS(request, {
           validateUUID,
-          proxyIP: config.proxyIP,
+          proxyIP: proxyIP,
           dnsServer: config.dnsServer,
           muxEnabled,
+          statsReporter,
+          waitUntil: ctx.waitUntil.bind(ctx),
         });
       }
 

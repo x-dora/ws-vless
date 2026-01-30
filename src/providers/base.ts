@@ -4,6 +4,7 @@
  */
 
 import type { UUIDProvider, UUIDProviderConfig } from '../types';
+import { providerLogger } from '../utils/logger';
 
 // ============================================================================
 // 抽象基类
@@ -53,7 +54,7 @@ export abstract class BaseUUIDProvider implements UUIDProvider {
       this.cacheExpiry = Date.now() + this.cacheDuration;
       return uuids;
     } catch (error) {
-      console.error(`[${this.name}] Failed to fetch UUIDs:`, error);
+      providerLogger.error(`[${this.name}] Failed to fetch UUIDs:`, error);
       // 如果获取失败但有缓存，返回缓存
       if (this.cachedUUIDs.length > 0) {
         return this.cachedUUIDs;

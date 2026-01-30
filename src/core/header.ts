@@ -130,6 +130,7 @@ export function processHeader(
       protocolVersion: version,
       isUDP: false,
       isMux: true,
+      userUUID: receivedUUID,
     };
   }
 
@@ -159,6 +160,7 @@ export function processHeader(
     protocolVersion: version,
     isUDP,
     isMux,
+    userUUID: receivedUUID,
   };
 }
 
