@@ -158,6 +158,10 @@ class StatsStore:
         self._current_inbound_tag = self.DEFAULT_INBOUND_TAG
         self._current_outbound_tag = self.DEFAULT_OUTBOUND_TAG
         
+        # uuid -> email 映射（从 xrayConfig.inbounds[].settings.clients 获取）
+        # Xray 使用 email 作为流量统计的用户标识
+        self._uuid_to_email: dict[str, str] = {}
+        
         # 出入站统计（独立于用户统计）
         # 格式: { tag: { "uplink": int, "downlink": int } }
         self._inbound_stats: dict[str, dict] = {}
@@ -190,15 +194,22 @@ class StatsStore:
                 )
                 self._stats[user.username] = user
             
-            # 恢复 UUID 映射
+            # 恢复 UUID 映射（旧版兼容）
             for uuid, user_id in data.get('mappings', {}).items():
                 self._uuid_mapping.add_mapping(uuid, user_id)
+            
+            # 恢复 uuid -> email 映射
+            self._uuid_to_email = data.get('uuid_to_email', {})
             
             # 恢复出入站统计
             self._inbound_stats = data.get('inbound_stats', {})
             self._outbound_stats = data.get('outbound_stats', {})
             
-            logger.info(f"已加载 {len(self._stats)} 个用户统计, {len(data.get('mappings', {}))} 个映射")
+            # 恢复标签设置
+            self._current_inbound_tag = data.get('current_inbound_tag', self.DEFAULT_INBOUND_TAG)
+            self._current_outbound_tag = data.get('current_outbound_tag', self.DEFAULT_OUTBOUND_TAG)
+            
+            logger.info(f"已加载 {len(self._stats)} 个用户统计, {len(self._uuid_to_email)} 个 uuid->email 映射")
         except Exception as e:
             logger.error(f"加载数据失败: {e}")
     
@@ -218,8 +229,11 @@ class StatsStore:
                         for u in self._stats.values()
                     ],
                     'mappings': self._uuid_mapping.get_all_mappings(),
+                    'uuid_to_email': self._uuid_to_email,
                     'inbound_stats': self._inbound_stats,
                     'outbound_stats': self._outbound_stats,
+                    'current_inbound_tag': self._current_inbound_tag,
+                    'current_outbound_tag': self._current_outbound_tag,
                     'saved_at': datetime.now().isoformat(),
                 }
             
@@ -253,23 +267,19 @@ class StatsStore:
     def uuid_mapping(self) -> UUIDMapping:
         return self._uuid_mapping
     
-    def report(self, identifier: str, uplink: int, downlink: int, is_uuid: bool = True,
+    def report(self, identifier: str, uplink: int, downlink: int,
                 inbound_tag: str = None, outbound_tag: str = None):
         """上报用户流量
         
         Args:
-            identifier: 用户标识（UUID 或 userId）
+            identifier: 用户标识（UUID，会自动转换为 email）
             uplink: 上行流量（字节）
             downlink: 下行流量（字节）
-            is_uuid: identifier 是否是 UUID（True 时会尝试转换为 userId）
             inbound_tag: 入站 tag（用于出入站统计，默认使用 xrayConfig 中的）
             outbound_tag: 出站 tag（用于出入站统计，默认使用 xrayConfig 中的）
         """
-        # 如果是 UUID，尝试转换为 userId
-        if is_uuid:
-            username = self._uuid_mapping.get_user_id(identifier)
-        else:
-            username = identifier
+        # 将 UUID 转换为 email（Xray 使用 email 作为流量统计标识）
+        username = self.get_email_by_uuid(identifier)
         
         # 使用 xrayConfig 设置的标签或默认值
         inbound_tag = inbound_tag or self._current_inbound_tag
@@ -372,10 +382,11 @@ class StatsStore:
             }
     
     def set_tags_from_xray_config(self, xray_config: dict) -> tuple[str, str]:
-        """从 xrayConfig 中提取并设置出入站标签
+        """从 xrayConfig 中提取并设置出入站标签和 uuid->email 映射
         
         入站：使用第一个 inbound 的 tag
         出站：使用 protocol 为 freedom 的 outbound 的 tag，没有则用第一个
+        uuid->email：从 inbounds[].settings.clients 中提取
         
         Returns:
             (inbound_tag, outbound_tag)
@@ -383,12 +394,24 @@ class StatsStore:
         inbound_tag = self.DEFAULT_INBOUND_TAG
         outbound_tag = self.DEFAULT_OUTBOUND_TAG
         
-        # 提取入站标签（第一个）
+        # 提取入站标签（第一个）和 uuid->email 映射
         inbounds = xray_config.get('inbounds', [])
+        uuid_email_count = 0
+        
         if inbounds and len(inbounds) > 0:
             first_inbound = inbounds[0]
             if 'tag' in first_inbound:
                 inbound_tag = first_inbound['tag']
+            
+            # 从所有 inbounds 的 clients 中提取 uuid->email 映射
+            for inbound in inbounds:
+                clients = inbound.get('settings', {}).get('clients', [])
+                for client in clients:
+                    client_id = client.get('id')  # VLESS UUID
+                    client_email = client.get('email')  # Xray 用于统计的标识
+                    if client_id and client_email:
+                        self._uuid_to_email[client_id.lower()] = client_email
+                        uuid_email_count += 1
         
         # 提取出站标签（protocol 为 freedom 的，或第一个）
         outbounds = xray_config.get('outbounds', [])
@@ -409,8 +432,15 @@ class StatsStore:
             self._current_inbound_tag = inbound_tag
             self._current_outbound_tag = outbound_tag
         
-        logger.info(f"从 xrayConfig 设置标签: inbound={inbound_tag}, outbound={outbound_tag}")
+        logger.info(f"从 xrayConfig 设置: inbound={inbound_tag}, outbound={outbound_tag}, uuid->email 映射 {uuid_email_count} 个")
         return inbound_tag, outbound_tag
+    
+    def get_email_by_uuid(self, uuid: str) -> str:
+        """根据 UUID 获取对应的 email（用于流量统计标识）
+        
+        如果没有映射，返回 UUID 本身
+        """
+        return self._uuid_to_email.get(uuid.lower(), uuid)
     
     @property
     def current_inbound_tag(self) -> str:
@@ -662,11 +692,15 @@ class NodeHandler(BaseHTTPRequestHandler):
                 self.send_error_json("uplink/downlink must be integers", 400)
                 return
             
-            # 直接使用 uuid，不需要转换
-            stats_store.report(uuid, uplink, downlink, is_uuid=False,
+            # 上报流量（uuid 会自动转换为 email）
+            email = stats_store.get_email_by_uuid(uuid)
+            stats_store.report(uuid, uplink, downlink,
                              inbound_tag=inbound_tag, outbound_tag=outbound_tag)
             
-            logger.info(f"流量上报: {uuid}, ↑{uplink} ↓{downlink}")
+            if email != uuid:
+                logger.info(f"流量上报: {uuid} -> {email}, ↑{uplink} ↓{downlink}")
+            else:
+                logger.info(f"流量上报: {uuid}, ↑{uplink} ↓{downlink}")
             
             self.send_json({"success": True})
             return
@@ -688,7 +722,7 @@ class NodeHandler(BaseHTTPRequestHandler):
                 
                 if uuid:
                     try:
-                        stats_store.report(uuid, int(uplink), int(downlink), is_uuid=False,
+                        stats_store.report(uuid, int(uplink), int(downlink),
                                          inbound_tag=inbound_tag, outbound_tag=outbound_tag)
                         count += 1
                     except (ValueError, TypeError):
@@ -744,6 +778,8 @@ class NodeHandler(BaseHTTPRequestHandler):
             # 请求体包含 xrayConfig 和 internals
             logger.info("收到启动请求（Worker 模式模拟成功）")
             
+            logger.info(f"请求体: {body}")
+
             # 从 xrayConfig 中提取出入站标签
             xray_config = body.get('xrayConfig', {})
             if xray_config:
