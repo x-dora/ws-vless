@@ -453,17 +453,43 @@ class StatsStore:
         return self._current_outbound_tag
     
     def get_system_stats(self) -> dict:
-        """获取系统统计"""
+        """获取系统统计（模拟 Xray 内部统计格式）
+        
+        这是 Xray gRPC Stats API 返回的格式，用于监控 Xray 进程本身的状态
+        """
         with self._lock:
-            total_uplink = sum(u.uplink for u in self._stats.values())
-            total_downlink = sum(u.downlink for u in self._stats.values())
+            uptime_seconds = int(time.time() - self._start_time)
+            # 模拟 Xray 的内存和 GC 统计
             return {
-                "uptime": int(time.time() - self._start_time),
-                "totalUsers": len(self._stats),
-                "activeUsers": sum(1 for u in self._stats.values() if time.time() - u.last_seen < 300),
-                "totalUplink": total_uplink,
-                "totalDownlink": total_downlink,
+                "numGoroutine": 50,        # 模拟 goroutine 数量
+                "numGC": uptime_seconds // 60,  # 模拟 GC 次数
+                "alloc": 1024 * 1024 * 20,     # 模拟当前分配内存 (~20MB)
+                "totalAlloc": 1024 * 1024 * 100,  # 模拟总分配内存
+                "sys": 1024 * 1024 * 50,       # 模拟系统内存
+                "mallocs": 10000,              # 模拟 malloc 次数
+                "frees": 9000,                 # 模拟 free 次数
+                "liveObjects": 1000,           # 模拟活跃对象数
+                "pauseTotalNs": 1000000,       # 模拟 GC 暂停时间 (纳秒)
+                "uptime": uptime_seconds,      # 运行时间（秒）
             }
+    
+    def get_node_system_info(self) -> dict:
+        """获取节点系统信息（用于 xray/start 响应）
+        
+        这是节点机器的硬件信息，不是 Xray 进程统计
+        """
+        import platform
+        try:
+            import os
+            cpu_count = os.cpu_count() or 1
+        except:
+            cpu_count = 1
+        
+        return {
+            "cpuCores": cpu_count,
+            "cpuModel": f"{platform.processor() or 'Unknown'}/2.0 GHz",
+            "memoryTotal": "4 GB",  # 模拟值
+        }
     
     def get_all_stats(self) -> dict:
         """获取详细统计信息"""
@@ -786,14 +812,15 @@ class NodeHandler(BaseHTTPRequestHandler):
                 inbound_tag, outbound_tag = stats_store.set_tags_from_xray_config(xray_config)
                 logger.info(f"使用标签: inbound={inbound_tag}, outbound={outbound_tag}")
             
+            # 响应格式与 remnawave/node 的 StartXrayResponseModel 一致
             self.send_json({
                 "response": {
                     "isStarted": True,
-                    "xrayVersion": "1.8.24",
+                    "version": "1.8.24",  # Xray 版本
                     "error": None,
-                    "systemInfo": stats_store.get_system_stats(),
-                    "node": {
-                        "version": "1.0.0-worker"
+                    "systemInformation": stats_store.get_node_system_info(),  # 节点硬件信息
+                    "nodeInformation": {
+                        "version": "1.0.0-worker"  # Node 版本
                     }
                 }
             })
