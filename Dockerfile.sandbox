@@ -1,0 +1,22 @@
+# Use a newer Node image to ensure GLIBC compatibility (Cloudflare workerd needs GLIBC >= 2.32)
+FROM node:22-bookworm
+
+# Install Python for mock scripts
+RUN apt-get update && apt-get install -y python3 python3-pip git curl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy the rest of the project
+COPY . .
+
+# Copy the dev vars
+COPY .dev.vars .dev.vars
+
+# Default command (can be overridden)
+CMD ["npm", "test"]
