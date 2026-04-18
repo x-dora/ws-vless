@@ -15,10 +15,14 @@
 export interface WorkerEnv {
   /** 默认 UUID，用于验证客户端 */
   UUID?: string;
-  /** 代理 IP，用于 TCP 连接重试时的备用地址 */
+  /** 显式代理 IP，用于 TCP 连接重试时覆盖 NAT64 回退 */
   PROXY_IP?: string;
   /** DNS 服务器地址，默认使用 Cloudflare DNS */
   DNS_SERVER?: string;
+  /** NAT64 前缀列表，逗号分隔 */
+  NAT64_PREFIXES?: string;
+  /** NAT64 A 记录解析器地址 */
+  NAT64_RESOLVER_URL?: string;
 
   // =========================================================================
   // API 安全配置

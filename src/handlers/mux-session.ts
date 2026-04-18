@@ -9,7 +9,6 @@
  * - KeepAlive 心跳支持
  */
 
-// @ts-expect-error - Cloudflare Workers 特有模块
 import { connect } from 'cloudflare:sockets';
 import { DEFAULT_DNS_SERVER } from '../config';
 import {
@@ -25,6 +24,8 @@ import {
 import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
+import type { OutboundRetryOptions } from '../utils/nat64';
+import { resolveRetryTarget } from '../utils/nat64';
 
 // ============================================================================
 // 常量配置
@@ -66,9 +67,7 @@ const DNS_TIMEOUT_MS = 5000;
  */
 function createTimeoutPromise(ms: number): Promise<never> {
   return new Promise((_, reject) => {
-    // @ts-expect-error - scheduler 是 Cloudflare Workers 全局对象
     if (typeof scheduler !== 'undefined' && typeof scheduler.wait === 'function') {
-      // @ts-expect-error
       scheduler.wait(ms).then(() => reject(new Error('Connect timeout')));
     } else {
       setTimeout(() => reject(new Error('Connect timeout')), ms);
@@ -209,7 +208,7 @@ export interface MuxSessionOptions {
   webSocket: WebSocket;
   responseHeader: Uint8Array;
   log: ConnLogFunction;
-  proxyIP?: string;
+  retryOptions?: OutboundRetryOptions;
   dnsServer?: string;
   timeout?: number;
   /** 最大子请求数（默认 48） */
@@ -244,7 +243,7 @@ export class MuxSession {
   private log: ConnLogFunction;
 
   // 配置
-  private proxyIP?: string;
+  private retryOptions?: OutboundRetryOptions;
   private dnsServer: string;
   private timeout: number;
   private maxSubrequests: number;
@@ -262,7 +261,7 @@ export class MuxSession {
     this.webSocket = options.webSocket;
     this.writeQueue = new WriteQueue(options.webSocket, options.responseHeader);
     this.log = options.log;
-    this.proxyIP = options.proxyIP;
+    this.retryOptions = options.retryOptions;
     this.dnsServer = options.dnsServer || DEFAULT_DNS_SERVER;
     this.timeout = options.timeout || 300000;
     this.maxSubrequests = options.maxSubrequests || MAX_SUBREQUESTS;
@@ -426,6 +425,7 @@ export class MuxSession {
     const subConn: SubConnection = {
       id,
       address: conn.address,
+      addressType: conn.addressType,
       port: conn.port,
       network: conn.network,
       closed: false,
@@ -458,43 +458,93 @@ export class MuxSession {
     initialData?: Uint8Array,
   ): Promise<void> {
     try {
-      const tcpSocket: Socket = connect({
-        hostname: subConn.address,
-        port: subConn.port,
-      });
+      let retryAttempted = false;
 
-      subConn.socket = tcpSocket;
+      const connectAndPipe = async (
+        address: string,
+        allowRetry: boolean,
+        reason: string,
+      ): Promise<void> => {
+        const tcpSocket: Socket = connect({
+          hostname: address,
+          port: subConn.port,
+        });
 
-      // 等待连接（带超时）
-      try {
-        await Promise.race([tcpSocket.opened, createTimeoutPromise(CONNECT_TIMEOUT_MS)]);
-      } catch (error) {
-        this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
-        this.sendEndFrame(subConn.id);
-        subConn.closed = true;
+        subConn.socket = tcpSocket;
+
+        // 等待连接（带超时）
         try {
-          tcpSocket.close();
-        } catch {}
-        this.removeConnection(subConn.id);
-        return;
-      }
+          await Promise.race([tcpSocket.opened, createTimeoutPromise(CONNECT_TIMEOUT_MS)]);
+        } catch (error) {
+          this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
+          try {
+            tcpSocket.close();
+          } catch {}
 
-      subConn.writer = tcpSocket.writable.getWriter();
-      subConn.ready = true;
+          if (allowRetry) {
+            const target = await resolveRetryTarget(
+              subConn.address,
+              subConn.addressType,
+              this.retryOptions ?? {},
+            );
+            if (!target) {
+              throw error;
+            }
 
-      // 写入初始数据（分块）
-      if (initialData && initialData.length > 0 && !subConn.closed) {
-        await this.writeToSocket(subConn, initialData);
-      }
+            retryAttempted = true;
+            this.log.debug(
+              `Mux retry via ${target.mode} ${target.address}:${subConn.port} (${reason})`,
+            );
+            await connectAndPipe(target.address, false, 'retry');
+            return;
+          }
 
-      // 发送待处理数据
-      while (subConn.pendingData.length > 0 && !subConn.closed) {
-        const pendingChunk = subConn.pendingData.shift()!;
-        await this.writeToSocket(subConn, pendingChunk);
-      }
+          throw error;
+        }
 
-      // 管道远程数据到 WebSocket
-      this.pipeRemoteToWebSocket(subConn.id, tcpSocket);
+        subConn.writer = tcpSocket.writable.getWriter();
+        subConn.ready = true;
+
+        // 写入初始数据（分块）
+        if (initialData && initialData.length > 0 && !subConn.closed) {
+          await this.writeToSocket(subConn, initialData);
+        }
+
+        // 发送待处理数据
+        while (subConn.pendingData.length > 0 && !subConn.closed) {
+          const pendingChunk = subConn.pendingData.shift()!;
+          await this.writeToSocket(subConn, pendingChunk);
+        }
+
+        const retry = allowRetry
+          ? async (): Promise<boolean> => {
+              if (retryAttempted) {
+                return false;
+              }
+
+              const target = await resolveRetryTarget(
+                subConn.address,
+                subConn.addressType,
+                this.retryOptions ?? {},
+              );
+              if (!target) {
+                return false;
+              }
+
+              retryAttempted = true;
+              this.log.debug(
+                `Mux retry via ${target.mode} ${target.address}:${subConn.port} (${reason})`,
+              );
+              await connectAndPipe(target.address, false, 'retry');
+              return true;
+            }
+          : null;
+
+        // 管道远程数据到 WebSocket
+        await this.pipeRemoteToWebSocket(subConn.id, tcpSocket, retry);
+      };
+
+      await connectAndPipe(subConn.address, true, 'initial connect failure');
     } catch (error) {
       this.log.error(`TCP error id=${subConn.id}: ${error}`);
       this.sendEndFrame(subConn.id);
@@ -702,11 +752,21 @@ export class MuxSession {
   // 数据发送（使用写入队列）
   // ==========================================================================
 
-  private pipeRemoteToWebSocket(id: number, socket: Socket): void {
-    socket.readable
+  private async pipeRemoteToWebSocket(
+    id: number,
+    socket: Socket,
+    retry: (() => Promise<boolean>) | null = null,
+  ): Promise<void> {
+    let hasIncomingData = false;
+    let streamError: unknown = null;
+
+    await socket.readable
       .pipeTo(
         new WritableStream({
           write: (chunk: Uint8Array) => {
+            if (chunk.byteLength > 0) {
+              hasIncomingData = true;
+            }
             // 大数据分块发送
             if (chunk.length > MAX_CHUNK_SIZE) {
               for (const subChunk of splitIntoChunks(chunk, MAX_CHUNK_SIZE)) {
@@ -717,16 +777,28 @@ export class MuxSession {
             }
           },
           close: () => {
-            this.sendEndFrame(id);
-            this.removeConnection(id);
+            // 交由外层根据是否需要重试决定是否关闭子连接
           },
           abort: () => {
-            this.sendEndFrame(id);
-            this.removeConnection(id);
+            // 交由外层根据是否需要重试决定是否关闭子连接
           },
         }),
       )
-      .catch(() => {});
+      .catch((error) => {
+        streamError = error;
+      });
+
+    if (!hasIncomingData && retry) {
+      const retried = await retry();
+      if (retried) {
+        return;
+      }
+    }
+
+    if (streamError || !hasIncomingData) {
+      this.sendEndFrame(id);
+      this.removeConnection(id);
+    }
   }
 
   private sendDataToWebSocket(id: number, data: Uint8Array): void {

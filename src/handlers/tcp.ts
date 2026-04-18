@@ -3,12 +3,13 @@
  * 处理代理 TCP 连接
  */
 
-// @ts-expect-error - Cloudflare Workers 特有模块
 import { connect } from 'cloudflare:sockets';
 import type { TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
 import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
+import type { OutboundRetryOptions } from '../utils/nat64';
+import { resolveRetryTarget } from '../utils/nat64';
 
 // ============================================================================
 // TCP 连接处理
@@ -31,27 +32,41 @@ import { safeCloseWebSocket } from '../utils/_websocket';
 export async function handleTCPOutBound(
   remoteSocket: RemoteSocketWrapper,
   addressRemote: string,
+  addressType: number | undefined,
   portRemote: number,
   rawClientData: Uint8Array,
   webSocket: WebSocket,
   responseHeader: Uint8Array,
   log: ConnLogFunction,
-  proxyIP?: string,
+  retryOptions?: OutboundRetryOptions,
   trafficTracker?: TrafficTracker | null,
 ): Promise<void> {
+  let retryAttempted = false;
+
   /**
    * 连接到远程服务器并写入初始数据
    * @param address 目标地址
    * @param port 目标端口
    * @returns TCP socket 实例
    */
-  async function connectAndWrite(address: string, port: number): Promise<Socket> {
+  async function connectAndWrite(
+    address: string,
+    port: number,
+    mode: 'direct' | 'proxy-ip' | 'nat64',
+  ): Promise<Socket> {
     const tcpSocket: Socket = connect({
       hostname: address,
       port: port,
     });
 
     remoteSocket.value = tcpSocket;
+    log.debug(
+      mode === 'direct'
+        ? `Connecting to ${address}:${port}`
+        : `Connecting via ${mode} ${address}:${port}`,
+    );
+
+    await tcpSocket.opened;
     log.debug(`Connected to ${address}:${port}`);
 
     // 写入初始数据（通常是 TLS Client Hello）
@@ -66,14 +81,28 @@ export async function handleTCPOutBound(
   }
 
   /**
-   * 重试连接（使用代理 IP）
-   * 当直连失败时尝试通过代理 IP 连接
+   * 重试连接（优先显式代理 IP，否则走 NAT64）
    */
-  async function retry(): Promise<void> {
-    const retryAddress = proxyIP || addressRemote;
-    log.debug(`Retrying connection via ${retryAddress}:${portRemote}`);
+  async function retry(reason: string): Promise<boolean> {
+    if (retryAttempted) {
+      return false;
+    }
 
-    const tcpSocket = await connectAndWrite(retryAddress, portRemote);
+    retryAttempted = true;
+    const target = await resolveRetryTarget(addressRemote, addressType, retryOptions ?? {});
+    if (!target) {
+      log.debug(`No retry target available (${reason})`);
+      return false;
+    }
+
+    log.debug(`Retrying connection via ${target.mode} ${target.address}:${portRemote} (${reason})`);
+    let tcpSocket: Socket;
+    try {
+      tcpSocket = await connectAndWrite(target.address, portRemote, target.mode);
+    } catch (error) {
+      log.warn(`Retry connect failed (${target.mode}): ${String(error)}`);
+      return false;
+    }
 
     // 无论重试成功与否，最终都要关闭 WebSocket
     tcpSocket.closed
@@ -85,14 +114,33 @@ export async function handleTCPOutBound(
       });
 
     // 将远程数据转发到 WebSocket
-    remoteSocketToWS(tcpSocket, webSocket, responseHeader, null, log, trafficTracker);
+    await remoteSocketToWS(tcpSocket, webSocket, responseHeader, null, log, trafficTracker);
+    return true;
   }
 
-  // 首先尝试直连
-  const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+  try {
+    // 首先尝试直连
+    const tcpSocket = await connectAndWrite(addressRemote, portRemote, 'direct');
 
-  // 将远程数据转发到 WebSocket，如果没有数据则重试
-  remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log, trafficTracker);
+    // 将远程数据转发到 WebSocket，如果没有数据则重试
+    await remoteSocketToWS(
+      tcpSocket,
+      webSocket,
+      responseHeader,
+      async () => retry('no incoming data'),
+      log,
+      trafficTracker,
+    );
+  } catch (error) {
+    if (retryAttempted) {
+      throw error;
+    }
+    log.warn('Initial TCP connect failed, attempting fallback', String(error));
+    const retried = await retry('initial connect failure');
+    if (!retried) {
+      safeCloseWebSocket(webSocket);
+    }
+  }
 }
 
 // ============================================================================
@@ -113,12 +161,13 @@ export async function remoteSocketToWS(
   remoteSocket: Socket,
   webSocket: WebSocket,
   responseHeader: Uint8Array | null,
-  retry: (() => Promise<void>) | null,
+  retry: (() => Promise<boolean>) | null,
   log: ConnLogFunction,
   trafficTracker?: TrafficTracker | null,
 ): Promise<void> {
   let header: Uint8Array | null = responseHeader;
   let hasIncomingData = false;
+  let streamError: unknown = null;
 
   await remoteSocket.readable
     .pipeTo(
@@ -128,7 +177,9 @@ export async function remoteSocketToWS(
         },
 
         async write(chunk: Uint8Array, controller) {
-          hasIncomingData = true;
+          if (chunk.byteLength > 0) {
+            hasIncomingData = true;
+          }
 
           // 追踪下行流量
           trafficTracker?.addDownlink(chunk.byteLength);
@@ -162,14 +213,23 @@ export async function remoteSocketToWS(
       }),
     )
     .catch((error: unknown) => {
+      streamError = error;
       log.error('remoteSocketToWS exception:', String(error));
-      safeCloseWebSocket(webSocket);
     });
 
   // 如果没有收到数据且有重试函数，执行重试
   // 这通常发生在 CF 连接 socket 时出现问题
   if (!hasIncomingData && retry) {
     log.debug('No incoming data, retrying...');
-    retry();
+    const retried = await retry();
+    if (retried) {
+      return;
+    }
+    safeCloseWebSocket(webSocket);
+    return;
+  }
+
+  if (streamError || !hasIncomingData) {
+    safeCloseWebSocket(webSocket);
   }
 }

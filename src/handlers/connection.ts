@@ -10,8 +10,9 @@ import {
   TrafficTracker,
 } from '../services/stats-reporter';
 import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
-import { makeReadableWebSocketStream } from '../utils/_websocket';
+import { makeReadableWebSocketStream, safeCloseWebSocket } from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
+import type { OutboundRetryOptions } from '../utils/nat64';
 import { createMuxSession, type MuxSession } from './mux-session';
 import { handleTCPOutBound } from './tcp';
 import { handleUDPOutBound, type UDPWriteFunction } from './udp';
@@ -28,6 +29,10 @@ export interface ConnectionHandlerOptions {
   validateUUID: UUIDValidator;
   /** 代理 IP（用于 TCP 重试） */
   proxyIP?: string;
+  /** NAT64 前缀列表 */
+  nat64Prefixes?: string[];
+  /** NAT64 A 记录解析器 */
+  nat64ResolverURL?: string;
   /** DNS 服务器地址 */
   dnsServer?: string;
   /** 是否启用 Mux 多路复用 */
@@ -53,7 +58,16 @@ export async function handleTunnelOverWS(
   request: Request,
   options: ConnectionHandlerOptions,
 ): Promise<Response> {
-  const { validateUUID, proxyIP, dnsServer, muxEnabled = true, statsReporter, waitUntil } = options;
+  const {
+    validateUUID,
+    proxyIP,
+    nat64Prefixes,
+    nat64ResolverURL,
+    dnsServer,
+    muxEnabled = true,
+    statsReporter,
+    waitUntil,
+  } = options;
 
   // 创建 WebSocket 对
   const webSocketPair = new WebSocketPair();
@@ -92,6 +106,12 @@ export async function handleTunnelOverWS(
   let udpStreamWrite: UDPWriteFunction | null = null;
   let isDns = false;
 
+  const retryOptions: OutboundRetryOptions = {
+    proxyIP,
+    nat64Prefixes,
+    resolverURL: nat64ResolverURL,
+  };
+
   // Mux 会话（如果是 Mux 连接）
   let muxSession: MuxSession | null = null;
 
@@ -128,6 +148,7 @@ export async function handleTunnelOverWS(
             message,
             portRemote = 443,
             addressRemote = '',
+            addressType,
             rawDataIndex,
             protocolVersion = new Uint8Array([0, 0]),
             isUDP,
@@ -168,7 +189,7 @@ export async function handleTunnelOverWS(
               webSocket,
               responseHeader,
               log,
-              proxyIP,
+              retryOptions,
               dnsServer,
             });
 
@@ -190,17 +211,21 @@ export async function handleTunnelOverWS(
             udpStreamWrite(rawClientData);
           } else {
             // TCP 连接
-            handleTCPOutBound(
+            void handleTCPOutBound(
               remoteSocketWrapper,
               addressRemote,
+              addressType,
               portRemote,
               rawClientData,
               webSocket,
               responseHeader,
               log,
-              proxyIP,
+              retryOptions,
               trafficTracker,
-            );
+            ).catch((error) => {
+              log.error('TCP outbound error', String(error));
+              safeCloseWebSocket(webSocket);
+            });
           }
         },
 
@@ -270,7 +295,6 @@ export async function handleTunnelOverWS(
   // 返回 WebSocket 升级响应
   return new Response(null, {
     status: 101,
-    // @ts-expect-error - webSocket 属性是 Cloudflare Workers 的 WebSocket 升级响应特有
     webSocket: client,
   });
 }

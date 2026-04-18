@@ -74,7 +74,9 @@ npm run deploy
 | `STATS_REPORT_URL` | 否 | 流量统计上报地址 |
 | `STATS_REPORT_TOKEN` | 否 | 流量统计上报认证 Token |
 | `MUX_ENABLED` | 否 | Mux 多路复用开关，默认 true |
-| `PROXY_IP` | 否 | 代理 IP 地址 |
+| `PROXY_IP` | 否 | 显式代理 IP 覆盖地址 |
+| `NAT64_PREFIXES` | 否 | NAT64 前缀列表，逗号分隔 |
+| `NAT64_RESOLVER_URL` | 否 | NAT64 A 记录解析器地址 |
 | `DNS_SERVER` | 否 | DNS 服务器地址 |
 | `LOG_LEVEL` | 否 | 日志级别：OFF/ERROR/WARN/INFO/DEBUG |
 

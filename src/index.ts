@@ -119,10 +119,6 @@ export default {
       const upgradeHeader = request.headers.get('Upgrade');
 
       if (upgradeHeader === 'websocket') {
-        const proxyIP =
-          config.proxyIP !== ''
-            ? config.proxyIP
-            : `${request.cf?.colo}.PrOxYIp.CmLiUsSsS.nEt`.toLowerCase();
         // 处理 WebSocket 代理连接
         const muxEnabled = env.MUX_ENABLED !== 'false'; // 默认启用
 
@@ -137,7 +133,9 @@ export default {
 
         return await handleTunnelOverWS(request, {
           validateUUID,
-          proxyIP: proxyIP,
+          proxyIP: config.proxyIP,
+          nat64Prefixes: config.nat64Prefixes,
+          nat64ResolverURL: config.nat64ResolverURL,
           dnsServer: config.dnsServer,
           muxEnabled,
           statsReporter,

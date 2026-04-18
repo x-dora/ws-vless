@@ -143,6 +143,8 @@ export interface SubConnection {
   id: number;
   /** 目标地址 */
   address: string;
+  /** 地址类型 */
+  addressType: AddressType;
   /** 目标端口 */
   port: number;
   /** 网络类型 */

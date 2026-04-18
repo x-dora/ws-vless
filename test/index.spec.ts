@@ -1,24 +1,62 @@
-import { createExecutionContext, env, SELF, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 
-// For now, you'll need to do something like this to get a correctly-typed
-// `Request` to pass to `worker.fetch()`.
-const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+const TEST_UUID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-describe('Hello World worker', () => {
-  it('responds with Hello World! (unit style)', async () => {
-    const request = new IncomingRequest('http://example.com');
-    // Create an empty context to pass to `worker.fetch()`.
-    const ctx = createExecutionContext();
-    const response = await worker.fetch(request, env, ctx);
-    // Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
-    await waitOnExecutionContext(ctx);
-    expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+describe('worker root response', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+        if (url.includes('/api/users')) {
+          return new Response(
+            JSON.stringify({
+              response: {
+                users: [{ vlessUuid: TEST_UUID, enabled: true }],
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+
+        return new Response('{}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
   });
 
-  it('responds with Hello World! (integration style)', async () => {
-    const response = await SELF.fetch('https://example.com');
-    expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the current root status payload', async () => {
+    const request = new Request('http://example.com/');
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      request,
+      {
+        ...env,
+        DEV_MODE: 'true',
+        UUID: TEST_UUID,
+        RW_API_URL: 'https://panel.example.test',
+        RW_API_KEY: 'test-token',
+      },
+      ctx,
+    );
+
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('application/json');
+    expect(await response.json()).toEqual({ message: 'Tunnel Worker Running' });
   });
 });

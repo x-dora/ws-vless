@@ -4,6 +4,7 @@
  */
 
 import type { WorkerEnv } from '../types';
+import { parseNat64Prefixes } from '../utils/nat64';
 
 // ============================================================================
 // 默认配置
@@ -20,9 +21,19 @@ export const DEFAULT_UUID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 export const DEFAULT_PROXY_IP = '';
 
 /**
+ * 默认 NAT64 前缀
+ */
+export const DEFAULT_NAT64_PREFIXES = ['2602:fc59:b0:64::'] as const;
+
+/**
  * 默认 DNS 服务器
  */
 export const DEFAULT_DNS_SERVER = 'https://1.1.1.1/dns-query';
+
+/**
+ * 默认 NAT64 解析器
+ */
+export const DEFAULT_NAT64_RESOLVER_URL = 'https://1.1.1.1/dns-query';
 
 /**
  * WebSocket Early Data 路径参数
@@ -57,6 +68,12 @@ export class RuntimeConfig {
   /** DNS 服务器地址 */
   public readonly dnsServer: string;
 
+  /** NAT64 前缀列表 */
+  public readonly nat64Prefixes: string[];
+
+  /** NAT64 A 记录解析器 */
+  public readonly nat64ResolverURL: string;
+
   /** 是否启用 Mux */
   public readonly muxEnabled: boolean;
 
@@ -67,6 +84,8 @@ export class RuntimeConfig {
     this.userID = env.UUID || DEFAULT_UUID;
     this.proxyIP = env.PROXY_IP || DEFAULT_PROXY_IP;
     this.dnsServer = env.DNS_SERVER || DEFAULT_DNS_SERVER;
+    this.nat64Prefixes = parseNat64Prefixes(env.NAT64_PREFIXES, DEFAULT_NAT64_PREFIXES);
+    this.nat64ResolverURL = env.NAT64_RESOLVER_URL || DEFAULT_NAT64_RESOLVER_URL;
     this.muxEnabled = env.MUX_ENABLED !== 'false';
     this.muxTimeout = env.MUX_TIMEOUT ? parseInt(env.MUX_TIMEOUT, 10) : DEFAULT_MUX_TIMEOUT;
   }

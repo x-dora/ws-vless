@@ -1,0 +1,33 @@
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  - repo: local
+    hooks:
+      - id: biome-check
+        name: biome check
+        entry: pnpm
+        args:
+          - exec
+          - biome
+          - check
+          - --write
+          - --staged
+          - --no-errors-on-unmatched
+        language: system
+        pass_filenames: false
+        files: ^(src/|test/|scripts/|.*\.(ts|tsx|js|mjs|cjs|json|jsonc|md|css|html)$|biome\.json$|wrangler\.jsonc$|tsconfig\.json$|vitest\.config\.mts$|package\.json$)
+        exclude: ^worker-configuration\.d\.ts$
+
+      - id: vitest-related
+        name: vitest related
+        entry: pnpm
+        args:
+          - exec
+          - vitest
+          - related
+          - --run
+          - --passWithNoTests
+        language: system
+        pass_filenames: true
+        files: ^(src/|test/|scripts/|.*\.(ts|tsx|js|mjs|cjs|json|jsonc)$|wrangler\.jsonc$|tsconfig\.json$|vitest\.config\.mts$)$
+        exclude: ^worker-configuration\.d\.ts$
