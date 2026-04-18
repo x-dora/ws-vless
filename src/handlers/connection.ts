@@ -3,23 +3,18 @@
  * 处理代理协议的 WebSocket 连接（支持普通连接和 Mux 多路复用）
  */
 
-import type { RemoteSocketWrapper, ConnLogFunction } from '../types';
-import { 
-  processHeader, 
-  createResponseHeader,
-  type UUIDValidator,
-} from '../core/header';
-import { isMuxConnection } from '../core/mux';
+import { createResponseHeader, processHeader, type UUIDValidator } from '../core/header';
+import {
+  createStatsReporter,
+  type StatsReporterConfig,
+  TrafficTracker,
+} from '../services/stats-reporter';
+import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
 import { makeReadableWebSocketStream } from '../utils/_websocket';
+import { createConnLog } from '../utils/logger';
+import { createMuxSession, type MuxSession } from './mux-session';
 import { handleTCPOutBound } from './tcp';
 import { handleUDPOutBound, type UDPWriteFunction } from './udp';
-import { createMuxSession, type MuxSession } from './mux-session';
-import { 
-  TrafficTracker, 
-  createStatsReporter, 
-  type StatsReporterConfig 
-} from '../services/stats-reporter';
-import { createConnLog } from '../utils/logger';
 
 // ============================================================================
 // 处理配置
@@ -49,14 +44,14 @@ export interface ConnectionHandlerOptions {
 
 /**
  * 处理 WebSocket 代理请求
- * 
+ *
  * @param request 传入的 HTTP 请求
  * @param options 处理选项
  * @returns WebSocket 升级响应
  */
 export async function handleTunnelOverWS(
   request: Request,
-  options: ConnectionHandlerOptions
+  options: ConnectionHandlerOptions,
 ): Promise<Response> {
   const { validateUUID, proxyIP, dnsServer, muxEnabled = true, statsReporter, waitUntil } = options;
 
@@ -73,9 +68,7 @@ export async function handleTunnelOverWS(
 
   // 流量追踪器和上报函数
   let trafficTracker: TrafficTracker | null = null;
-  const reportStats = statsReporter 
-    ? createStatsReporter(statsReporter) 
-    : async () => true;
+  const reportStats = statsReporter ? createStatsReporter(statsReporter) : async () => true;
 
   /**
    * 日志函数 - 使用统一日志系统
@@ -88,11 +81,7 @@ export async function handleTunnelOverWS(
   const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
 
   // 创建可读的 WebSocket 流
-  const readableWebSocketStream = makeReadableWebSocketStream(
-    webSocket,
-    earlyDataHeader,
-    log
-  );
+  const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
 
   // 远程 socket 包装器（用于在函数间共享）
   const remoteSocketWrapper: RemoteSocketWrapper = {
@@ -111,7 +100,7 @@ export async function handleTunnelOverWS(
   readableWebSocketStream
     .pipeTo(
       new WritableStream({
-        async write(chunk: ArrayBuffer, controller) {
+        async write(chunk: ArrayBuffer, _controller) {
           // 处理 Mux 数据（流量由 muxSession 内部统计，关闭时获取）
           if (muxSession) {
             await muxSession.processData(chunk);
@@ -148,7 +137,7 @@ export async function handleTunnelOverWS(
 
           // 更新日志信息
           address = addressRemote;
-          const connectionType = isMux ? 'mux' : (isUDP ? 'udp' : 'tcp');
+          const connectionType = isMux ? 'mux' : isUDP ? 'udp' : 'tcp';
           portWithRandomLog = `${portRemote}--${Math.random().toString(36).substr(2, 4)} ${connectionType}`;
 
           // 处理解析错误
@@ -159,9 +148,9 @@ export async function handleTunnelOverWS(
           // 创建流量追踪器（如果启用了统计上报且有用户标识）
           if (statsReporter?.enabled && userUUID) {
             trafficTracker = new TrafficTracker(
-              userUUID, 
+              userUUID,
               `${addressRemote}:${portRemote}`,
-              connectionType as 'tcp' | 'udp' | 'mux'
+              connectionType as 'tcp' | 'udp' | 'mux',
             );
           }
 
@@ -182,7 +171,7 @@ export async function handleTunnelOverWS(
               proxyIP,
               dnsServer,
             });
-            
+
             // 处理初始数据
             if (rawClientData.length > 0) {
               await muxSession.processData(rawClientData.buffer);
@@ -196,12 +185,7 @@ export async function handleTunnelOverWS(
             }
 
             // DNS 查询
-            const { write } = await handleUDPOutBound(
-              webSocket,
-              responseHeader,
-              log,
-              dnsServer
-            );
+            const { write } = await handleUDPOutBound(webSocket, responseHeader, log, dnsServer);
             udpStreamWrite = write;
             udpStreamWrite(rawClientData);
           } else {
@@ -215,7 +199,7 @@ export async function handleTunnelOverWS(
               responseHeader,
               log,
               proxyIP,
-              trafficTracker
+              trafficTracker,
             );
           }
         },
@@ -241,7 +225,7 @@ export async function handleTunnelOverWS(
             if (!trafficTracker.isReported() && trafficTracker.hasTraffic()) {
               trafficTracker.markReported();
               const reportPromise = reportStats(stats)
-                .then((ok) => ok ? log.debug('Stats reported') : log.warn('Stats report failed'))
+                .then((ok) => (ok ? log.debug('Stats reported') : log.warn('Stats report failed')))
                 .catch((e) => log.error(`Stats report error: ${e}`));
               // 使用 waitUntil 确保上报请求在 Worker 结束后继续执行
               if (waitUntil) {
@@ -269,7 +253,7 @@ export async function handleTunnelOverWS(
             if (!trafficTracker.isReported() && trafficTracker.hasTraffic()) {
               trafficTracker.markReported();
               const reportPromise = reportStats(stats)
-                .then((ok) => ok ? log.debug('Stats reported') : log.warn('Stats report failed'))
+                .then((ok) => (ok ? log.debug('Stats reported') : log.warn('Stats report failed')))
                 .catch((e) => log.error(`Stats report error: ${e}`));
               if (waitUntil) {
                 waitUntil(reportPromise);
@@ -277,7 +261,7 @@ export async function handleTunnelOverWS(
             }
           }
         },
-      })
+      }),
     )
     .catch((err) => {
       log.error('ReadableWebSocketStream pipeTo error', String(err));
@@ -286,8 +270,7 @@ export async function handleTunnelOverWS(
   // 返回 WebSocket 升级响应
   return new Response(null, {
     status: 101,
-    // @ts-ignore - webSocket 属性是 Cloudflare Workers 的 WebSocket 升级响应特有
+    // @ts-expect-error - webSocket 属性是 Cloudflare Workers 的 WebSocket 升级响应特有
     webSocket: client,
   });
 }
-

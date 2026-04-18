@@ -3,7 +3,7 @@
  * 提供 WebSocket 相关的辅助函数
  */
 
-import { WS_READY_STATE, type ConnLogFunction } from '../types';
+import { type ConnLogFunction, WS_READY_STATE } from '../types';
 
 // ============================================================================
 // WebSocket 操作
@@ -16,10 +16,7 @@ import { WS_READY_STATE, type ConnLogFunction } from '../types';
  */
 export function safeCloseWebSocket(socket: WebSocket): void {
   try {
-    if (
-      socket.readyState === WS_READY_STATE.OPEN ||
-      socket.readyState === WS_READY_STATE.CLOSING
-    ) {
+    if (socket.readyState === WS_READY_STATE.OPEN || socket.readyState === WS_READY_STATE.CLOSING) {
       socket.close();
     }
   } catch {
@@ -51,7 +48,7 @@ export function isWebSocketOpen(socket: WebSocket): boolean {
 export function makeReadableWebSocketStream(
   webSocketServer: any,
   earlyDataHeader: string,
-  log: ConnLogFunction
+  log: ConnLogFunction,
 ): ReadableStream<ArrayBuffer> {
   let readableStreamCancel = false;
 

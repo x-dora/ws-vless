@@ -1,19 +1,23 @@
 {
-	"name": "ws-vless",
-	"version": "0.0.0",
-	"private": true,
-	"scripts": {
-		"deploy": "wrangler deploy --keep-vars",
-		"dev": "wrangler dev --log-level log",
-		"start": "wrangler dev",
-		"test": "vitest",
-		"cf-typegen": "wrangler types"
-	},
-	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.12.4",
-		"@cloudflare/workers-types": "^4.20260124.0",
-		"typescript": "^5.5.2",
-		"vitest": "~3.2.0",
-		"wrangler": "^4.60.0"
-	}
+  "name": "ws-vless",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy --keep-vars",
+    "dev": "wrangler dev --log-level log",
+    "start": "wrangler dev",
+    "test": "vitest",
+    "cf-typegen": "wrangler types",
+    "format": "biome format --write .",
+    "lint": "biome lint --write .",
+    "check": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.11",
+    "@cloudflare/vitest-pool-workers": "^0.12.4",
+    "@cloudflare/workers-types": "^4.20260124.0",
+    "typescript": "^5.5.2",
+    "vitest": "~3.2.0",
+    "wrangler": "^4.60.0"
+  }
 }

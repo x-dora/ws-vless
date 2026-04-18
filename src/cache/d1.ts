@@ -1,9 +1,9 @@
 /**
  * D1 缓存实现（二级缓存）
- * 
+ *
  * Cloudflare D1 SQLite 数据库
  * 需要绑定 UUID_D1 数据库
- * 
+ *
  * 初始化 SQL:
  * ```sql
  * CREATE TABLE IF NOT EXISTS uuid_cache (
@@ -16,8 +16,8 @@
  * ```
  */
 
-import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
 import { cacheLogger } from '../utils/logger';
+import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 
 /**
  * D1 数据库缓存存储实现
@@ -39,7 +39,9 @@ export class D1Store implements CacheStore {
    * 确保表存在
    */
   private async ensureTable(): Promise<void> {
-    if (this.initialized) return;
+    if (this.initialized) {
+      return;
+    }
 
     try {
       await this.db.exec(`
@@ -61,12 +63,15 @@ export class D1Store implements CacheStore {
   async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
     try {
       await this.ensureTable();
-      
-      const result = await this.db.prepare(
-        'SELECT value FROM uuid_cache WHERE key = ? AND expires_at > ?'
-      ).bind(`uuids:${provider}`, Date.now()).first<{ value: string }>();
 
-      if (!result) return null;
+      const result = await this.db
+        .prepare('SELECT value FROM uuid_cache WHERE key = ? AND expires_at > ?')
+        .bind(`uuids:${provider}`, Date.now())
+        .first<{ value: string }>();
+
+      if (!result) {
+        return null;
+      }
       return JSON.parse(result.value) as UUIDCacheData;
     } catch (error) {
       cacheLogger.error(`[D1] Get UUIDs error (${provider}):`, error);
@@ -77,7 +82,7 @@ export class D1Store implements CacheStore {
   async setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void> {
     try {
       await this.ensureTable();
-      
+
       const now = Date.now();
       const data: UUIDCacheData = {
         uuids,
@@ -86,15 +91,13 @@ export class D1Store implements CacheStore {
         expiresAt: now + ttlSeconds * 1000,
       };
 
-      await this.db.prepare(`
+      await this.db
+        .prepare(`
         INSERT OR REPLACE INTO uuid_cache (key, value, expires_at, created_at)
         VALUES (?, ?, ?, ?)
-      `).bind(
-        `uuids:${provider}`,
-        JSON.stringify(data),
-        data.expiresAt,
-        now
-      ).run();
+      `)
+        .bind(`uuids:${provider}`, JSON.stringify(data), data.expiresAt, now)
+        .run();
     } catch (error) {
       cacheLogger.error(`[D1] Set UUIDs error (${provider}):`, error);
     }
@@ -103,9 +106,7 @@ export class D1Store implements CacheStore {
   async deleteCachedUUIDs(provider: string): Promise<boolean> {
     try {
       await this.ensureTable();
-      await this.db.prepare('DELETE FROM uuid_cache WHERE key = ?')
-        .bind(`uuids:${provider}`)
-        .run();
+      await this.db.prepare('DELETE FROM uuid_cache WHERE key = ?').bind(`uuids:${provider}`).run();
       return true;
     } catch (error) {
       cacheLogger.error(`[D1] Delete UUIDs error (${provider}):`, error);
@@ -116,12 +117,15 @@ export class D1Store implements CacheStore {
   async getMergedUUIDCache(): Promise<MergedUUIDCache | null> {
     try {
       await this.ensureTable();
-      
-      const result = await this.db.prepare(
-        'SELECT value FROM uuid_cache WHERE key = ? AND expires_at > ?'
-      ).bind('uuids:merged', Date.now()).first<{ value: string }>();
 
-      if (!result) return null;
+      const result = await this.db
+        .prepare('SELECT value FROM uuid_cache WHERE key = ? AND expires_at > ?')
+        .bind('uuids:merged', Date.now())
+        .first<{ value: string }>();
+
+      if (!result) {
+        return null;
+      }
       return JSON.parse(result.value) as MergedUUIDCache;
     } catch (error) {
       cacheLogger.error('[D1] Get merged cache error:', error);
@@ -132,7 +136,7 @@ export class D1Store implements CacheStore {
   async setMergedUUIDCache(uuidMap: Record<string, string>, ttlSeconds: number): Promise<void> {
     try {
       await this.ensureTable();
-      
+
       const now = Date.now();
       const data: MergedUUIDCache = {
         uuidMap,
@@ -140,15 +144,13 @@ export class D1Store implements CacheStore {
         expiresAt: now + ttlSeconds * 1000,
       };
 
-      await this.db.prepare(`
+      await this.db
+        .prepare(`
         INSERT OR REPLACE INTO uuid_cache (key, value, expires_at, created_at)
         VALUES (?, ?, ?, ?)
-      `).bind(
-        'uuids:merged',
-        JSON.stringify(data),
-        data.expiresAt,
-        now
-      ).run();
+      `)
+        .bind('uuids:merged', JSON.stringify(data), data.expiresAt, now)
+        .run();
     } catch (error) {
       cacheLogger.error('[D1] Set merged cache error:', error);
     }
@@ -157,9 +159,7 @@ export class D1Store implements CacheStore {
   async deleteMergedUUIDCache(): Promise<boolean> {
     try {
       await this.ensureTable();
-      await this.db.prepare('DELETE FROM uuid_cache WHERE key = ?')
-        .bind('uuids:merged')
-        .run();
+      await this.db.prepare('DELETE FROM uuid_cache WHERE key = ?').bind('uuids:merged').run();
       return true;
     } catch (error) {
       cacheLogger.error('[D1] Delete merged cache error:', error);
@@ -173,9 +173,7 @@ export class D1Store implements CacheStore {
   async cleanup(): Promise<void> {
     try {
       await this.ensureTable();
-      await this.db.prepare('DELETE FROM uuid_cache WHERE expires_at < ?')
-        .bind(Date.now())
-        .run();
+      await this.db.prepare('DELETE FROM uuid_cache WHERE expires_at < ?').bind(Date.now()).run();
     } catch {
       // 忽略清理错误
     }

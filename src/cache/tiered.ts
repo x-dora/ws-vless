@@ -1,20 +1,20 @@
 /**
  * 分层缓存管理器
- * 
+ *
  * 缓存层级：
  * L1: Cache API（最快，边缘节点）
  * L2: KV 或 D1（持久化，KV 优先）
- * 
+ *
  * 读取策略：L1 → L2 → 原始请求
  * 写入策略：始终写 L1，L2 写入有间隔限制
  */
 
-import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
-import { L2_WRITE_INTERVAL } from './types';
-import { CacheAPIStore } from './cache-api';
-import { KVStore } from './kv';
-import { D1Store } from './d1';
 import { createLogger } from '../utils/logger';
+import { CacheAPIStore } from './cache-api';
+import { D1Store } from './d1';
+import { KVStore } from './kv';
+import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
+import { L2_WRITE_INTERVAL } from './types';
 
 const log = createLogger('Cache');
 
@@ -35,23 +35,23 @@ export interface TieredCacheOptions {
  */
 export class TieredCache implements CacheStore {
   readonly name = 'Tiered';
-  
+
   /** L1 缓存（Cache API） */
   private l1: CacheAPIStore;
-  
+
   /** L2 缓存（KV 或 D1，可选） */
   private l2: CacheStore | null = null;
-  
+
   /** L2 上次写入时间 */
   private l2LastWrite: Map<string, number> = new Map();
-  
+
   /** L2 写入间隔 */
   private l2WriteInterval: number;
 
   constructor(options: TieredCacheOptions = {}) {
     // L1 始终使用 Cache API
     this.l1 = new CacheAPIStore();
-    
+
     // L2 优先使用 KV，其次 D1
     if (options.kv) {
       const kvStore = new KVStore(options.kv);
@@ -60,7 +60,7 @@ export class TieredCache implements CacheStore {
         log.info('L2=KV');
       }
     }
-    
+
     if (!this.l2 && options.d1) {
       const d1Store = new D1Store(options.d1);
       if (d1Store.isAvailable()) {
@@ -68,11 +68,11 @@ export class TieredCache implements CacheStore {
         log.info('L2=D1');
       }
     }
-    
+
     if (!this.l2) {
       log.debug('L2 disabled');
     }
-    
+
     this.l2WriteInterval = options.l2WriteInterval ?? L2_WRITE_INTERVAL;
   }
 
@@ -84,8 +84,10 @@ export class TieredCache implements CacheStore {
    * 检查是否应该写入 L2
    */
   private shouldWriteL2(key: string): boolean {
-    if (!this.l2) return false;
-    
+    if (!this.l2) {
+      return false;
+    }
+
     const lastWrite = this.l2LastWrite.get(key) || 0;
     return Date.now() - lastWrite >= this.l2WriteInterval;
   }
@@ -102,8 +104,8 @@ export class TieredCache implements CacheStore {
   // ==========================================================================
 
   async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
-    const key = `uuids:${provider}`;
-    
+    const _key = `uuids:${provider}`;
+
     // 1. 先查 L1
     const l1Data = await this.l1.getCachedUUIDs(provider);
     if (l1Data) {
@@ -111,7 +113,7 @@ export class TieredCache implements CacheStore {
       return l1Data;
     }
     log.cacheMiss('L1', provider);
-    
+
     // 2. L1 未命中，查 L2
     if (this.l2) {
       const l2Data = await this.l2.getCachedUUIDs(provider);
@@ -127,18 +129,18 @@ export class TieredCache implements CacheStore {
       }
       log.cacheMiss('L2', provider);
     }
-    
+
     // 3. 全部未命中
     return null;
   }
 
   async setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void> {
     const key = `uuids:${provider}`;
-    
+
     // 始终写入 L1
     await this.l1.setCachedUUIDs(provider, uuids, ttlSeconds);
     log.cacheWrite('L1', `${provider} (${uuids.length})`);
-    
+
     // 有间隔地写入 L2
     if (this.shouldWriteL2(key)) {
       if (this.l2) {
@@ -151,17 +153,17 @@ export class TieredCache implements CacheStore {
 
   async deleteCachedUUIDs(provider: string): Promise<boolean> {
     const key = `uuids:${provider}`;
-    
+
     // 删除 L1
     const l1Result = await this.l1.deleteCachedUUIDs(provider);
-    
+
     // 删除 L2
     let l2Result = true;
     if (this.l2) {
       l2Result = await this.l2.deleteCachedUUIDs(provider);
       this.l2LastWrite.delete(key);
     }
-    
+
     log.debug('delete:', provider);
     return l1Result || l2Result;
   }
@@ -178,7 +180,7 @@ export class TieredCache implements CacheStore {
       return l1Data;
     }
     log.cacheMiss('L1', 'merged');
-    
+
     // 2. L1 未命中，查 L2
     if (this.l2) {
       const l2Data = await this.l2.getMergedUUIDCache();
@@ -194,7 +196,7 @@ export class TieredCache implements CacheStore {
       }
       log.cacheMiss('L2', 'merged');
     }
-    
+
     // 3. 全部未命中
     return null;
   }
@@ -202,11 +204,11 @@ export class TieredCache implements CacheStore {
   async setMergedUUIDCache(uuidMap: Record<string, string>, ttlSeconds: number): Promise<void> {
     const key = 'uuids:merged';
     const count = Object.keys(uuidMap).length;
-    
+
     // 始终写入 L1
     await this.l1.setMergedUUIDCache(uuidMap, ttlSeconds);
     log.cacheWrite('L1', `merged (${count})`);
-    
+
     // 有间隔地写入 L2
     if (this.shouldWriteL2(key)) {
       if (this.l2) {
@@ -219,17 +221,17 @@ export class TieredCache implements CacheStore {
 
   async deleteMergedUUIDCache(): Promise<boolean> {
     const key = 'uuids:merged';
-    
+
     // 删除 L1
     const l1Result = await this.l1.deleteMergedUUIDCache();
-    
+
     // 删除 L2
     let l2Result = true;
     if (this.l2) {
       l2Result = await this.l2.deleteMergedUUIDCache();
       this.l2LastWrite.delete(key);
     }
-    
+
     log.debug('delete: merged');
     return l1Result || l2Result;
   }

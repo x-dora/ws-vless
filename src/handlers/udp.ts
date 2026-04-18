@@ -3,9 +3,9 @@
  * 处理代理 UDP 连接（主要用于 DNS 查询）
  */
 
+import { DEFAULT_DNS_SERVER } from '../config';
 import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
-import { DEFAULT_DNS_SERVER } from '../config';
 
 // ============================================================================
 // UDP/DNS 处理
@@ -19,7 +19,7 @@ export type UDPWriteFunction = (chunk: Uint8Array) => void;
 /**
  * 处理 UDP 出站连接
  * 目前仅支持 DNS 查询（端口 53）
- * 
+ *
  * @param webSocket WebSocket 连接
  * @param responseHeader 协议响应头
  * @param log 日志函数
@@ -30,7 +30,7 @@ export async function handleUDPOutBound(
   webSocket: WebSocket,
   responseHeader: Uint8Array,
   log: ConnLogFunction,
-  dnsServer: string = DEFAULT_DNS_SERVER
+  dnsServer: string = DEFAULT_DNS_SERVER,
 ): Promise<{ write: UDPWriteFunction }> {
   let isHeaderSent = false;
 
@@ -49,9 +49,7 @@ export async function handleUDPOutBound(
         const udpPacketLength = new DataView(lengthBuffer.buffer).getUint16(0);
 
         // 提取 UDP 数据
-        const udpData = new Uint8Array(
-          chunk.slice(index + 2, index + 2 + udpPacketLength)
-        );
+        const udpData = new Uint8Array(chunk.slice(index + 2, index + 2 + udpPacketLength));
 
         index = index + 2 + udpPacketLength;
         controller.enqueue(udpData);
@@ -81,10 +79,7 @@ export async function handleUDPOutBound(
           const udpSize = dnsQueryResult.byteLength;
 
           // 构建 UDP 响应长度前缀
-          const udpSizeBuffer = new Uint8Array([
-            (udpSize >> 8) & 0xff,
-            udpSize & 0xff,
-          ]);
+          const udpSizeBuffer = new Uint8Array([(udpSize >> 8) & 0xff, udpSize & 0xff]);
 
           // 发送响应
           if (webSocket.readyState === WS_READY_STATE.OPEN) {
@@ -106,7 +101,7 @@ export async function handleUDPOutBound(
             }
           }
         },
-      })
+      }),
     )
     .catch((error) => {
       log.error(`DNS UDP error: ${error}`);

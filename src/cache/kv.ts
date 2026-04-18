@@ -1,12 +1,12 @@
 /**
  * KV 缓存实现（二级缓存）
- * 
+ *
  * Cloudflare Workers KV 存储
  * 需要绑定 UUID_KV 命名空间
  */
 
-import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
 import { cacheLogger } from '../utils/logger';
+import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 
 /**
  * KV 缓存存储实现
@@ -26,13 +26,15 @@ export class KVStore implements CacheStore {
   async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
     try {
       const data = await this.kv.get<UUIDCacheData>(`uuids:${provider}`, 'json');
-      if (!data) return null;
+      if (!data) {
+        return null;
+      }
 
       // 检查过期（KV 有自己的 TTL，但也检查一下）
       if (data.expiresAt && Date.now() > data.expiresAt) {
         return null;
       }
-      
+
       return data;
     } catch (error) {
       cacheLogger.error(`[KV] Get UUIDs error (${provider}):`, error);
@@ -71,12 +73,14 @@ export class KVStore implements CacheStore {
   async getMergedUUIDCache(): Promise<MergedUUIDCache | null> {
     try {
       const data = await this.kv.get<MergedUUIDCache>('uuids:merged', 'json');
-      if (!data) return null;
+      if (!data) {
+        return null;
+      }
 
       if (data.expiresAt && Date.now() > data.expiresAt) {
         return null;
       }
-      
+
       return data;
     } catch (error) {
       cacheLogger.error('[KV] Get merged cache error:', error);

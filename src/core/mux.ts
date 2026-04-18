@@ -1,8 +1,8 @@
 /**
  * Mux.Cool 多路复用协议实现
- * 
+ *
  * 协议规范: https://xtls.github.io/development/protocols/muxcool.html
- * 
+ *
  * Mux.Cool 是一个多路复用传输协议，用于在一条已建立的数据流中传输多个独立的子连接。
  * 当主连接的目标地址为 "v1.mux.cool" 时，表示使用 Mux.Cool 协议。
  */
@@ -22,7 +22,7 @@ const MUX_COOL_ADDRESS: string = 'v1.mux.cool';
 /**
  * Mux 状态码（命令类型）
  */
-export const enum MuxStatus {
+export enum MuxStatus {
   /** 新建子连接 */
   New = 0x01,
   /** 保持子连接（传输数据） */
@@ -36,7 +36,7 @@ export const enum MuxStatus {
 /**
  * Mux 选项标志
  */
-export const enum MuxOption {
+export enum MuxOption {
   /** 有额外数据 */
   Data = 0x01,
 }
@@ -44,7 +44,7 @@ export const enum MuxOption {
 /**
  * Mux 网络类型
  */
-export const enum MuxNetwork {
+export enum MuxNetwork {
   TCP = 0x01,
   UDP = 0x02,
 }
@@ -180,16 +180,16 @@ export function isMuxConnection(address: string): boolean {
  * @param offset 起始偏移（默认 0）
  * @param length 可用长度（默认到数组末尾）
  * @returns 解析结果
- * 
+ *
  * 优化：使用 subarray 而非 slice，避免数据拷贝，降低 CPU 开销
  */
 export function parseMuxFrame(
   bytes: Uint8Array,
   offset: number = 0,
-  length?: number
+  length?: number,
 ): MuxParseResult {
-  const availableLength = length ?? (bytes.length - offset);
-  
+  const availableLength = length ?? bytes.length - offset;
+
   // 检查最小长度（元数据长度字段 2 字节）
   if (availableLength < 2) {
     return {
@@ -200,7 +200,7 @@ export function parseMuxFrame(
 
   // 读取元数据长度（手动读取避免创建 DataView）
   const metadataLength = (bytes[offset] << 8) | bytes[offset + 1];
-  
+
   // 检查是否有足够的元数据
   if (availableLength < 2 + metadataLength) {
     return {
@@ -237,9 +237,9 @@ export function parseMuxFrame(
       const network = bytes[offset + 6] as MuxNetwork;
       const port = (bytes[offset + 7] << 8) | bytes[offset + 8];
       const addressType = bytes[offset + 9] as AddressType;
-      
+
       const { address, length: addrLen } = parseAddress(bytes, offset + 10, addressType);
-      
+
       // XUDP Global ID（8 字节，如果有的话）- 使用 subarray 避免拷贝
       let globalId: Uint8Array | undefined;
       const expectedMetaLen = 4 + 1 + 2 + 1 + addrLen + 8;
@@ -288,7 +288,7 @@ export function parseMuxFrame(
     }
 
     const dataLength = (bytes[offset + frameLength] << 8) | bytes[offset + frameLength + 1];
-    
+
     if (availableLength < frameLength + 2 + dataLength) {
       return {
         hasError: true,
@@ -323,7 +323,7 @@ const textDecoder = new TextDecoder();
 function parseAddress(
   bytes: Uint8Array,
   offset: number,
-  addressType: AddressType
+  addressType: AddressType,
 ): { address: string; length: number } {
   switch (addressType) {
     case AddressType.IPv4: {
@@ -335,9 +335,7 @@ function parseAddress(
     case AddressType.Domain: {
       const domainLength = bytes[offset];
       // 使用 subarray 避免拷贝
-      const address = textDecoder.decode(
-        bytes.subarray(offset + 1, offset + 1 + domainLength)
-      );
+      const address = textDecoder.decode(bytes.subarray(offset + 1, offset + 1 + domainLength));
       return { address, length: 1 + domainLength };
     }
 
@@ -375,7 +373,7 @@ export function buildMuxFrame(
   status: MuxStatus,
   option: number,
   metadata?: Uint8Array,
-  data?: Uint8Array
+  data?: Uint8Array,
 ): Uint8Array {
   // 计算元数据长度
   const baseMetaLength = 4; // ID(2) + Status(1) + Option(1)
@@ -422,7 +420,7 @@ export function buildMuxFrame(
  * @param id 子连接 ID
  * @param data 数据
  * @returns 构建的帧
- * 
+ *
  * Keep 帧结构（无额外元数据）:
  * - 元数据长度(2): 0x00 0x04
  * - ID(2): big-endian
@@ -433,21 +431,23 @@ export function buildMuxFrame(
  */
 export function buildMuxKeepFrame(id: number, data?: Uint8Array): Uint8Array {
   const dataLen = data?.length || 0;
-  
+
   if (dataLen === 0) {
     // 无数据的 Keep 帧：固定 6 字节
     const frame = new Uint8Array(6);
-    frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+    frame[0] = 0x00;
+    frame[1] = 0x04; // 元数据长度 = 4
     frame[2] = (id >> 8) & 0xff;
     frame[3] = id & 0xff;
     frame[4] = MuxStatus.Keep;
     frame[5] = 0x00; // 无数据
     return frame;
   }
-  
+
   // 有数据的 Keep 帧：6 + 2 + dataLen 字节
   const frame = new Uint8Array(8 + dataLen);
-  frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+  frame[0] = 0x00;
+  frame[1] = 0x04; // 元数据长度 = 4
   frame[2] = (id >> 8) & 0xff;
   frame[3] = id & 0xff;
   frame[4] = MuxStatus.Keep;
@@ -462,7 +462,7 @@ export function buildMuxKeepFrame(id: number, data?: Uint8Array): Uint8Array {
  * 构建 End 帧 - 固定结构，内联优化
  * @param id 子连接 ID
  * @returns 构建的帧
- * 
+ *
  * End 帧结构（固定 6 字节）:
  * - 元数据长度(2): 0x00 0x04
  * - ID(2): big-endian
@@ -471,7 +471,8 @@ export function buildMuxKeepFrame(id: number, data?: Uint8Array): Uint8Array {
  */
 export function buildMuxEndFrame(id: number): Uint8Array {
   const frame = new Uint8Array(6);
-  frame[0] = 0x00; frame[1] = 0x04; // 元数据长度 = 4
+  frame[0] = 0x00;
+  frame[1] = 0x04; // 元数据长度 = 4
   frame[2] = (id >> 8) & 0xff;
   frame[3] = id & 0xff;
   frame[4] = MuxStatus.End;
@@ -486,7 +487,8 @@ export function buildMuxEndFrame(id: number): Uint8Array {
 export function buildMuxKeepAliveFrame(): Uint8Array {
   const frame = new Uint8Array(6);
   const randomId = (Math.random() * 65535) | 0; // 使用位运算替代 Math.floor
-  frame[0] = 0x00; frame[1] = 0x04;
+  frame[0] = 0x00;
+  frame[1] = 0x04;
   frame[2] = (randomId >> 8) & 0xff;
   frame[3] = randomId & 0xff;
   frame[4] = MuxStatus.KeepAlive;

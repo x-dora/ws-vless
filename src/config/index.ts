@@ -50,10 +50,10 @@ export const DEFAULT_MUX_TIMEOUT = 300;
 export class RuntimeConfig {
   /** 用户 UUID */
   public readonly userID: string;
-  
+
   /** 代理 IP */
   public readonly proxyIP: string;
-  
+
   /** DNS 服务器地址 */
   public readonly dnsServer: string;
 

@@ -1,13 +1,13 @@
 /**
  * 统一日志模块
- * 
+ *
  * 支持日志级别控制，减少生产环境日志输出
  */
 
 /**
  * 日志级别
  */
-export const enum LogLevel {
+export enum LogLevel {
   /** 关闭所有日志 */
   OFF = 0,
   /** 错误日志 */
@@ -23,7 +23,7 @@ export const enum LogLevel {
 /**
  * 日志级别名称
  */
-const LEVEL_NAMES: Record<LogLevel, string> = {
+const _LEVEL_NAMES: Record<LogLevel, string> = {
   [LogLevel.OFF]: 'OFF',
   [LogLevel.ERROR]: 'ERROR',
   [LogLevel.WARN]: 'WARN',
@@ -67,12 +67,18 @@ export function initLogger(devMode: boolean, logLevel?: string): void {
 function parseLogLevel(level: string): LogLevel | null {
   const upper = level.toUpperCase();
   switch (upper) {
-    case 'OFF': return LogLevel.OFF;
-    case 'ERROR': return LogLevel.ERROR;
-    case 'WARN': return LogLevel.WARN;
-    case 'INFO': return LogLevel.INFO;
-    case 'DEBUG': return LogLevel.DEBUG;
-    default: return null;
+    case 'OFF':
+      return LogLevel.OFF;
+    case 'ERROR':
+      return LogLevel.ERROR;
+    case 'WARN':
+      return LogLevel.WARN;
+    case 'INFO':
+      return LogLevel.INFO;
+    case 'DEBUG':
+      return LogLevel.DEBUG;
+    default:
+      return null;
   }
 }
 
@@ -197,7 +203,7 @@ export const tcpLogger = createLogger('TCP');
 /**
  * 创建带上下文的日志函数
  * 用于 connection.ts 中的连接处理日志
- * 
+ *
  * @param getPrefix 获取日志前缀的函数（动态获取，如 () => "address:port"）
  * @returns 日志函数对象
  */

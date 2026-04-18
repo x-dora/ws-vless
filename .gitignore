@@ -166,3 +166,4 @@ dist
 !.env.example
 .wrangler/
 stats_data.json
+__pycache__/

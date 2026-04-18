@@ -3,13 +3,12 @@
  * 处理代理 TCP 连接
  */
 
-// @ts-ignore - Cloudflare Workers 特有模块
+// @ts-expect-error - Cloudflare Workers 特有模块
 import { connect } from 'cloudflare:sockets';
-
-import type { RemoteSocketWrapper, ConnLogFunction } from '../types';
+import type { TrafficTracker } from '../services/stats-reporter';
+import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
 import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
-import type { TrafficTracker } from '../services/stats-reporter';
 
 // ============================================================================
 // TCP 连接处理
@@ -18,7 +17,7 @@ import type { TrafficTracker } from '../services/stats-reporter';
 /**
  * 处理 TCP 出站连接
  * 建立到远程服务器的 TCP 连接并桥接 WebSocket
- * 
+ *
  * @param remoteSocket 远程 socket 包装器
  * @param addressRemote 远程地址
  * @param portRemote 远程端口
@@ -38,7 +37,7 @@ export async function handleTCPOutBound(
   responseHeader: Uint8Array,
   log: ConnLogFunction,
   proxyIP?: string,
-  trafficTracker?: TrafficTracker | null
+  trafficTracker?: TrafficTracker | null,
 ): Promise<void> {
   /**
    * 连接到远程服务器并写入初始数据
@@ -102,7 +101,7 @@ export async function handleTCPOutBound(
 
 /**
  * 将远程 Socket 数据转发到 WebSocket
- * 
+ *
  * @param remoteSocket 远程 TCP socket
  * @param webSocket WebSocket 连接
  * @param responseHeader 协议响应头
@@ -116,7 +115,7 @@ export async function remoteSocketToWS(
   responseHeader: Uint8Array | null,
   retry: (() => Promise<void>) | null,
   log: ConnLogFunction,
-  trafficTracker?: TrafficTracker | null
+  trafficTracker?: TrafficTracker | null,
 ): Promise<void> {
   let header: Uint8Array | null = responseHeader;
   let hasIncomingData = false;
@@ -160,7 +159,7 @@ export async function remoteSocketToWS(
         abort(reason) {
           log.error('Remote connection readable aborted:', String(reason));
         },
-      })
+      }),
     )
     .catch((error: unknown) => {
       log.error('remoteSocketToWS exception:', String(error));

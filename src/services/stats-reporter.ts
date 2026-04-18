@@ -61,7 +61,7 @@ export class TrafficTracker {
     /** 用户 vlessUuid */
     public readonly uuid: string,
     public readonly target?: string,
-    public readonly type?: 'tcp' | 'udp' | 'mux'
+    public readonly type?: 'tcp' | 'udp' | 'mux',
   ) {
     this.startTime = Date.now();
   }
@@ -122,7 +122,7 @@ export class TrafficTracker {
 
 /**
  * 创建流量上报器
- * 
+ *
  * @param config 上报配置
  * @returns 上报函数，返回 Promise<boolean> 表示是否成功
  */
@@ -154,7 +154,7 @@ export function createStatsReporter(config: StatsReporterConfig) {
       };
 
       if (authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`;
+        headers.Authorization = `Bearer ${authToken}`;
       }
 
       const response = await fetch(endpoint, {
@@ -173,7 +173,7 @@ export function createStatsReporter(config: StatsReporterConfig) {
 
       if (response.ok) {
         log.debug(
-          `Stats reported: ${stats.uuid} ↑${formatBytes(stats.uplink)} ↓${formatBytes(stats.downlink)}`
+          `Stats reported: ${stats.uuid} ↑${formatBytes(stats.uplink)} ↓${formatBytes(stats.downlink)}`,
         );
         return true;
       } else {
@@ -193,7 +193,7 @@ export function createStatsReporter(config: StatsReporterConfig) {
 
 /**
  * 批量上报流量
- * 
+ *
  * @param endpoint 上报端点
  * @param stats 流量统计数组
  * @param authToken 认证 Token
@@ -201,13 +201,17 @@ export function createStatsReporter(config: StatsReporterConfig) {
 export async function batchReportStats(
   endpoint: string,
   stats: TrafficStats[],
-  authToken?: string
+  authToken?: string,
 ): Promise<boolean> {
-  if (stats.length === 0) return true;
+  if (stats.length === 0) {
+    return true;
+  }
 
   // 过滤无流量的记录
-  const validStats = stats.filter(s => s.uplink > 0 || s.downlink > 0);
-  if (validStats.length === 0) return true;
+  const validStats = stats.filter((s) => s.uplink > 0 || s.downlink > 0);
+  if (validStats.length === 0) {
+    return true;
+  }
 
   const batchEndpoint = endpoint.replace('/worker/report', '/worker/batch-report');
 
@@ -217,14 +221,14 @@ export async function batchReportStats(
     };
 
     if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
+      headers.Authorization = `Bearer ${authToken}`;
     }
 
     const response = await fetch(batchEndpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        reports: validStats.map(s => ({
+        reports: validStats.map((s) => ({
           uuid: s.uuid,
           uplink: s.uplink,
           downlink: s.downlink,
@@ -247,9 +251,11 @@ export async function batchReportStats(
  * 格式化字节数
  */
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (bytes === 0) {
+    return '0 B';
+  }
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 }

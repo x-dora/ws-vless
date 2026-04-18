@@ -1,12 +1,12 @@
 /**
  * Cache API 缓存实现（一级缓存）
- * 
+ *
  * Cloudflare Workers 内置的 Cache API
  * 用作最快的一级缓存层
  */
 
-import type { CacheStore, UUIDCacheData, MergedUUIDCache } from './types';
 import { cacheLogger } from '../utils/logger';
+import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 
 /**
  * 缓存键前缀
@@ -35,17 +35,19 @@ export class CacheAPIStore implements CacheStore {
       const cache = caches.default;
       const request = new Request(getCacheKey(`uuids:${provider}`));
       const response = await cache.match(request);
-      
-      if (!response) return null;
 
-      const data = await response.json() as UUIDCacheData;
-      
+      if (!response) {
+        return null;
+      }
+
+      const data = (await response.json()) as UUIDCacheData;
+
       // 检查是否过期
       if (data.expiresAt && Date.now() > data.expiresAt) {
         await this.deleteCachedUUIDs(provider);
         return null;
       }
-      
+
       return data;
     } catch (error) {
       cacheLogger.error(`[CacheAPI] Get UUIDs error (${provider}):`, error);
@@ -93,16 +95,18 @@ export class CacheAPIStore implements CacheStore {
     try {
       const cache = caches.default;
       const response = await cache.match(new Request(getCacheKey('uuids:merged')));
-      
-      if (!response) return null;
 
-      const data = await response.json() as MergedUUIDCache;
-      
+      if (!response) {
+        return null;
+      }
+
+      const data = (await response.json()) as MergedUUIDCache;
+
       if (data.expiresAt && Date.now() > data.expiresAt) {
         await this.deleteMergedUUIDCache();
         return null;
       }
-      
+
       return data;
     } catch (error) {
       cacheLogger.error('[CacheAPI] Get merged cache error:', error);

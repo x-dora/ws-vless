@@ -1,7 +1,7 @@
 /**
  * Mux 会话管理模块
  * 管理 Mux.Cool 多路复用连接中的所有子连接
- * 
+ *
  * 参考 Xray-core 的 mux 实现优化：
  * - 分块写入（8KB 块）
  * - 写入队列防止并发问题
@@ -9,24 +9,22 @@
  * - KeepAlive 心跳支持
  */
 
-// @ts-ignore - Cloudflare Workers 特有模块
+// @ts-expect-error - Cloudflare Workers 特有模块
 import { connect } from 'cloudflare:sockets';
-
-import type { ConnLogFunction } from '../types';
-import { WS_READY_STATE } from '../types';
+import { DEFAULT_DNS_SERVER } from '../config';
 import {
-  MuxStatus,
-  MuxNetwork,
-  MuxOption,
-  parseMuxFrame,
-  buildMuxKeepFrame,
   buildMuxEndFrame,
   buildMuxKeepAliveFrame,
+  buildMuxKeepFrame,
   type MuxFrame,
+  MuxNetwork,
+  MuxStatus,
+  parseMuxFrame,
   type SubConnection,
 } from '../core/mux';
+import type { ConnLogFunction } from '../types';
+import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
-import { DEFAULT_DNS_SERVER } from '../config';
 
 // ============================================================================
 // 常量配置
@@ -68,9 +66,9 @@ const DNS_TIMEOUT_MS = 5000;
  */
 function createTimeoutPromise(ms: number): Promise<never> {
   return new Promise((_, reject) => {
-    // @ts-ignore - scheduler 是 Cloudflare Workers 全局对象
+    // @ts-expect-error - scheduler 是 Cloudflare Workers 全局对象
     if (typeof scheduler !== 'undefined' && typeof scheduler.wait === 'function') {
-      // @ts-ignore
+      // @ts-expect-error
       scheduler.wait(ms).then(() => reject(new Error('Connect timeout')));
     } else {
       setTimeout(() => reject(new Error('Connect timeout')), ms);
@@ -98,7 +96,7 @@ function* splitIntoChunks(data: Uint8Array, chunkSize: number): Generator<Uint8A
 /**
  * WebSocket 写入队列（优化版）
  * 确保帧按顺序发送，避免并发写入问题
- * 
+ *
  * 优化：使用索引代替 shift()，避免数组元素移动开销
  */
 class WriteQueue {
@@ -145,7 +143,7 @@ class WriteQueue {
 
     while (this.head < this.queue.length) {
       const data = this.queue[this.head++];
-      
+
       try {
         if (!this.headerSent) {
           // 第一次发送需要附加响应头
@@ -229,34 +227,34 @@ export interface MuxSessionOptions {
 export class MuxSession {
   // 子连接管理
   private connections: Map<number, SubConnection> = new Map();
-  
+
   /**
    * 已结束的会话 ID 集合
    * 用于防止对同一个已关闭会话重复发送 End 帧
    * 参考 Xray 的 Session.closed 标志，但适配已从 Map 删除的场景
    */
   private endedSessions: Set<number> = new Set();
-  
+
   /** 已结束会话集合的最大容量，防止内存泄漏 */
   private static readonly MAX_ENDED_SESSIONS = 256;
-  
+
   // WebSocket 相关
   private webSocket: WebSocket;
   private writeQueue: WriteQueue;
   private log: ConnLogFunction;
-  
+
   // 配置
   private proxyIP?: string;
   private dnsServer: string;
   private timeout: number;
   private maxSubrequests: number;
-  
+
   // 缓冲区
   private buffer: Uint8Array = new Uint8Array(0);
-  
+
   // 统计信息
   private stats: SessionStats;
-  
+
   // 状态标记
   private closed = false;
 
@@ -268,7 +266,7 @@ export class MuxSession {
     this.dnsServer = options.dnsServer || DEFAULT_DNS_SERVER;
     this.timeout = options.timeout || 300000;
     this.maxSubrequests = options.maxSubrequests || MAX_SUBREQUESTS;
-    
+
     // 初始化统计
     this.stats = {
       totalTCPConnections: 0,
@@ -288,20 +286,22 @@ export class MuxSession {
 
   /**
    * 处理传入的 Mux 数据
-   * 
+   *
    * 优化策略：
    * 1. 如果没有缓冲数据，直接在原数组上解析，避免任何拷贝
    * 2. 只在必要时（有未完整帧）才进行缓冲区合并
    * 3. 使用 parseMuxFrame 的 offset 参数避免 slice
    */
   async processData(data: ArrayBuffer): Promise<void> {
-    if (this.closed) return;
-    
+    if (this.closed) {
+      return;
+    }
+
     this.stats.bytesReceived += data.byteLength;
     this.stats.lastActivityTime = Date.now();
-    
+
     const incoming = new Uint8Array(data);
-    
+
     // 优化：如果没有缓冲数据，直接在 incoming 上解析
     let bytes: Uint8Array;
     if (this.buffer.length === 0) {
@@ -313,7 +313,7 @@ export class MuxSession {
       bytes.set(incoming, this.buffer.length);
       this.buffer = new Uint8Array(0); // 清空旧缓冲区
     }
-    
+
     // 解析帧 - 直接在原数组上使用 offset，避免 slice
     let offset = 0;
     const totalLength = bytes.length;
@@ -322,11 +322,13 @@ export class MuxSession {
 
     while (offset < totalLength && maxIterations-- > 0) {
       const remainingLength = totalLength - offset;
-      if (remainingLength < 2) break;
-      
+      if (remainingLength < 2) {
+        break;
+      }
+
       // 直接传入 offset，避免创建新数组
       const result = parseMuxFrame(bytes, offset, remainingLength);
-      
+
       if (result.hasError) {
         if (result.message?.includes('Incomplete') || result.message?.includes('too short')) {
           break;
@@ -340,7 +342,7 @@ export class MuxSession {
         this.log.warn(`Mux invalid frameLength: ${frame.frameLength}`);
         break;
       }
-      
+
       frames.push(frame);
       offset += frame.frameLength;
     }
@@ -349,10 +351,10 @@ export class MuxSession {
     if (offset < totalLength) {
       this.buffer = bytes.slice(offset);
     }
-    
+
     // 处理所有帧
     for (const frame of frames) {
-      this.handleFrame(frame).catch(err => {
+      this.handleFrame(frame).catch((err) => {
         this.log.error(`Mux handleFrame error: ${err}`);
       });
     }
@@ -361,7 +363,7 @@ export class MuxSession {
   // ==========================================================================
   // 帧处理（参考 Xray 的 handleFrame）
   // ==========================================================================
-  
+
   private async handleFrame(frame: MuxFrame): Promise<void> {
     const { metadata, newConnection, udpAddress, data } = frame;
     const { id, status } = metadata;
@@ -393,24 +395,28 @@ export class MuxSession {
   private handleNewConnection(
     id: number,
     conn: NonNullable<MuxFrame['newConnection']>,
-    data?: Uint8Array
+    data?: Uint8Array,
   ): void {
     const isTCP = conn.network === MuxNetwork.TCP;
-    
+
     // 新连接：从已结束集合中移除（ID 可能被复用）
     this.endedSessions.delete(id);
-    
+
     // 检查子请求限制
     if (isTCP) {
       if (this.stats.limitReached || this.stats.totalTCPConnections >= this.maxSubrequests) {
         this.stats.limitReached = true;
-        this.log.warn(`Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
+        this.log.warn(
+          `Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`,
+        );
         this.sendEndFrame(id);
         this.markSessionEnded(id);
         return;
       }
       this.stats.totalTCPConnections++;
-      this.log.debug(`Mux New: id=${id}, ${conn.address}:${conn.port} [${this.stats.totalTCPConnections}/${this.maxSubrequests}]`);
+      this.log.debug(
+        `Mux New: id=${id}, ${conn.address}:${conn.port} [${this.stats.totalTCPConnections}/${this.maxSubrequests}]`,
+      );
     } else {
       this.stats.totalUDPConnections++;
       this.log.debug(`Mux New (UDP): id=${id}, ${conn.address}:${conn.port}`);
@@ -427,17 +433,17 @@ export class MuxSession {
       ready: false,
       pendingData: [],
     };
-    
+
     this.connections.set(id, subConn);
     this.stats.activeConnections = this.connections.size;
 
     // 异步处理连接
     if (isTCP) {
-      this.handleTCPSubConnection(subConn, data).catch(err => {
+      this.handleTCPSubConnection(subConn, data).catch((err) => {
         this.log.error(`TCP error id=${id}: ${err}`);
       });
     } else {
-      this.handleUDPSubConnection(subConn, data).catch(err => {
+      this.handleUDPSubConnection(subConn, data).catch((err) => {
         this.log.error(`UDP error id=${id}: ${err}`);
       });
     }
@@ -449,7 +455,7 @@ export class MuxSession {
 
   private async handleTCPSubConnection(
     subConn: SubConnection,
-    initialData?: Uint8Array
+    initialData?: Uint8Array,
   ): Promise<void> {
     try {
       const tcpSocket: Socket = connect({
@@ -458,22 +464,21 @@ export class MuxSession {
       });
 
       subConn.socket = tcpSocket;
-      
+
       // 等待连接（带超时）
       try {
-        await Promise.race([
-          tcpSocket.opened,
-          createTimeoutPromise(CONNECT_TIMEOUT_MS)
-        ]);
+        await Promise.race([tcpSocket.opened, createTimeoutPromise(CONNECT_TIMEOUT_MS)]);
       } catch (error) {
         this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
         this.sendEndFrame(subConn.id);
         subConn.closed = true;
-        try { tcpSocket.close(); } catch {}
+        try {
+          tcpSocket.close();
+        } catch {}
         this.removeConnection(subConn.id);
         return;
       }
-      
+
       subConn.writer = tcpSocket.writable.getWriter();
       subConn.ready = true;
 
@@ -481,7 +486,7 @@ export class MuxSession {
       if (initialData && initialData.length > 0 && !subConn.closed) {
         await this.writeToSocket(subConn, initialData);
       }
-      
+
       // 发送待处理数据
       while (subConn.pendingData.length > 0 && !subConn.closed) {
         const pendingChunk = subConn.pendingData.shift()!;
@@ -490,7 +495,6 @@ export class MuxSession {
 
       // 管道远程数据到 WebSocket
       this.pipeRemoteToWebSocket(subConn.id, tcpSocket);
-
     } catch (error) {
       this.log.error(`TCP error id=${subConn.id}: ${error}`);
       this.sendEndFrame(subConn.id);
@@ -503,13 +507,17 @@ export class MuxSession {
    * 写入数据到 Socket（分块写入，参考 Xray 的 8KB 分块）
    */
   private async writeToSocket(subConn: SubConnection, data: Uint8Array): Promise<void> {
-    if (!subConn.writer || subConn.closed) return;
-    
+    if (!subConn.writer || subConn.closed) {
+      return;
+    }
+
     try {
       // 大数据分块发送
       if (data.length > MAX_CHUNK_SIZE) {
         for (const chunk of splitIntoChunks(data, MAX_CHUNK_SIZE)) {
-          if (subConn.closed) break;
+          if (subConn.closed) {
+            break;
+          }
           await subConn.writer.write(chunk);
         }
       } else {
@@ -526,11 +534,10 @@ export class MuxSession {
   // UDP 子连接处理
   // ==========================================================================
 
-  private async handleUDPSubConnection(
-    subConn: SubConnection,
-    data?: Uint8Array
-  ): Promise<void> {
-    if (!data || data.length === 0) return;
+  private async handleUDPSubConnection(subConn: SubConnection, data?: Uint8Array): Promise<void> {
+    if (!data || data.length === 0) {
+      return;
+    }
 
     if (subConn.port !== 53) {
       this.log.warn(`UDP only supports DNS (port 53), got ${subConn.port}`);
@@ -546,7 +553,7 @@ export class MuxSession {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), DNS_TIMEOUT_MS);
-      
+
       const response = await fetch(this.dnsServer, {
         method: 'POST',
         headers: { 'content-type': 'application/dns-message' },
@@ -556,7 +563,7 @@ export class MuxSession {
 
       clearTimeout(timeoutId);
       const dnsResult = await response.arrayBuffer();
-      
+
       this.sendDataToWebSocket(id, new Uint8Array(dnsResult));
       this.log.debug(`DNS success: ${dnsResult.byteLength} bytes`);
     } catch (error) {
@@ -571,10 +578,10 @@ export class MuxSession {
   private async handleKeepConnection(
     id: number,
     data?: Uint8Array,
-    _udpAddress?: MuxFrame['udpAddress']
+    _udpAddress?: MuxFrame['udpAddress'],
   ): Promise<void> {
     const subConn = this.connections.get(id);
-    
+
     // 参考 Xray：未找到会话时发送关闭帧通知对端
     // 但需要防止重复发送，避免"乒乓效应"导致日志爆炸
     if (!subConn) {
@@ -585,8 +592,10 @@ export class MuxSession {
       // 如果已经发送过 End 帧，静默丢弃数据（参考 Xray 的 buf.Discard）
       return;
     }
-    
-    if (subConn.closed) return;
+
+    if (subConn.closed) {
+      return;
+    }
 
     if (data && data.length > 0) {
       if (subConn.network === MuxNetwork.TCP) {
@@ -615,7 +624,7 @@ export class MuxSession {
 
   private async handleEndConnection(id: number, data?: Uint8Array): Promise<void> {
     const subConn = this.connections.get(id);
-    
+
     // 只有会话存在时才打印日志和处理，避免重复日志
     // 参考 Xray 的 handleStatusEnd：只在找到会话时才执行操作
     if (!subConn) {
@@ -644,16 +653,22 @@ export class MuxSession {
 
   private closeSubConnection(id: number): void {
     const subConn = this.connections.get(id);
-    if (!subConn) return;
+    if (!subConn) {
+      return;
+    }
 
     subConn.closed = true;
 
     if (subConn.writer) {
-      try { subConn.writer.releaseLock(); } catch {}
+      try {
+        subConn.writer.releaseLock();
+      } catch {}
     }
 
     if (subConn.socket) {
-      try { subConn.socket.close(); } catch {}
+      try {
+        subConn.socket.close();
+      } catch {}
     }
 
     this.removeConnection(id);
@@ -709,22 +724,26 @@ export class MuxSession {
             this.sendEndFrame(id);
             this.removeConnection(id);
           },
-        })
+        }),
       )
       .catch(() => {});
   }
 
   private sendDataToWebSocket(id: number, data: Uint8Array): void {
-    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) return;
-    
+    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) {
+      return;
+    }
+
     const frame = buildMuxKeepFrame(id, data);
     this.stats.bytesSent += frame.length;
     this.writeQueue.enqueue(frame);
   }
 
   private sendEndFrame(id: number): void {
-    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) return;
-    
+    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) {
+      return;
+    }
+
     const frame = buildMuxEndFrame(id);
     this.writeQueue.enqueue(frame);
   }
@@ -733,8 +752,10 @@ export class MuxSession {
    * 发送 KeepAlive 帧（心跳）
    */
   sendKeepAlive(): void {
-    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) return;
-    
+    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) {
+      return;
+    }
+
     const frame = buildMuxKeepAliveFrame();
     this.writeQueue.enqueue(frame);
   }
@@ -747,7 +768,9 @@ export class MuxSession {
    * 关闭会话
    */
   close(): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     this.closed = true;
 
     for (const [id] of this.connections) {
@@ -800,8 +823,7 @@ export class MuxSession {
    * 参考 Xray 的 CloseIfNoSessionAndIdle
    */
   isIdle(maxIdleMs: number = 60000): boolean {
-    return this.connections.size === 0 && 
-           Date.now() - this.stats.lastActivityTime > maxIdleMs;
+    return this.connections.size === 0 && Date.now() - this.stats.lastActivityTime > maxIdleMs;
   }
 }
 

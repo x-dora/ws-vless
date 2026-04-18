@@ -4,32 +4,32 @@
 
 // 协议头解析
 export {
-  processHeader,
   createResponseHeader,
-  createUUIDValidator,
   createSingleUUIDValidator,
+  createUUIDValidator,
+  processHeader,
   type UUIDValidator,
 } from './header';
 
 // Mux.Cool 多路复用
 export {
-  // 常量
-  MuxStatus,
-  MuxOption,
-  MuxNetwork,
-  // 解析
-  isMuxConnection,
-  parseMuxFrame,
+  buildMuxEndFrame,
   // 构建
   buildMuxFrame,
-  buildMuxKeepFrame,
-  buildMuxEndFrame,
   buildMuxKeepAliveFrame,
+  buildMuxKeepFrame,
+  // 解析
+  isMuxConnection,
+  type MuxFrame,
   // 类型
   type MuxMetadata,
+  MuxNetwork,
   type MuxNewConnection,
-  type MuxUDPAddress,
-  type MuxFrame,
+  MuxOption,
   type MuxParseResult,
+  // 常量
+  MuxStatus,
+  type MuxUDPAddress,
+  parseMuxFrame,
   type SubConnection,
 } from './mux';

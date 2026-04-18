@@ -1,29 +1,24 @@
 /**
  * UUID 提供者管理模块
  * 管理多个 UUID 提供者，按优先级获取可用 UUID
- * 
+ *
  * 分层缓存架构：
  * - L1: Cache API（边缘节点）
  * - L2: KV 或 D1（持久化，可选）
  */
 
+import { type CacheStore, createCacheStore, DEFAULT_CACHE_CONFIG } from '../cache';
 import type { UUIDProvider, UUIDValidationResult } from '../types';
-import { isValidUUID } from '../utils/uuid';
 import { createLogger } from '../utils/logger';
-import { 
-  type CacheStore,
-  createCacheStore,
-  DEFAULT_CACHE_CONFIG,
-} from '../cache';
-import { BaseUUIDProvider, StaticUUIDProvider, HttpApiUUIDProvider } from './base';
+import { isValidUUID } from '../utils/uuid';
+import { BaseUUIDProvider, HttpApiUUIDProvider, StaticUUIDProvider } from './base';
 
 const log = createLogger('UUID');
 
-// 导出基类和内置提供者
-export { BaseUUIDProvider, StaticUUIDProvider, HttpApiUUIDProvider };
-
 // 导出 Remnawave 提供者
-export { RemnawaveUUIDProvider, createRemnawaveProvider } from './remnawave';
+export { createRemnawaveProvider, RemnawaveUUIDProvider } from './remnawave';
+// 导出基类和内置提供者
+export { BaseUUIDProvider, HttpApiUUIDProvider, StaticUUIDProvider };
 
 // ============================================================================
 // 提供者管理器配置
@@ -52,7 +47,7 @@ export interface UUIDManagerOptions {
 export class UUIDProviderManager {
   /** 已注册的提供者列表 */
   private providers: UUIDProvider[] = [];
-  
+
   /** 缓存 TTL（秒） */
   private cacheTTL: number;
 
@@ -82,7 +77,9 @@ export class UUIDProviderManager {
    * @param providers 提供者数组
    */
   registerAll(providers: UUIDProvider[]): void {
-    providers.forEach((p) => this.register(p));
+    for (const p of providers) {
+      this.register(p);
+    }
   }
 
   /**
@@ -137,7 +134,7 @@ export class UUIDProviderManager {
           log.error(`${provider.name} fetch failed:`, error);
           return { provider: provider.name, uuids: [] };
         }
-      })
+      }),
     );
 
     // 合并结果（按优先级顺序，先注册的优先）
@@ -154,7 +151,9 @@ export class UUIDProviderManager {
       }
     }
 
-    log.info(`Fetched ${Object.keys(uuidMap).length} UUIDs from ${this.providers.length} providers`);
+    log.info(
+      `Fetched ${Object.keys(uuidMap).length} UUIDs from ${this.providers.length} providers`,
+    );
     return uuidMap;
   }
 
@@ -186,7 +185,7 @@ export class UUIDProviderManager {
     // 尝试从缓存获取
     if (!forceRefresh) {
       const cached = await this.cacheStore.getMergedUUIDCache();
-      if (cached && cached.uuidMap[normalizedUUID]) {
+      if (cached?.uuidMap[normalizedUUID]) {
         return { isValid: true, provider: cached.uuidMap[normalizedUUID] };
       }
     }
@@ -194,8 +193,8 @@ export class UUIDProviderManager {
     // 刷新缓存并重新验证
     await this.getAllUUIDs(forceRefresh);
     const cached = await this.cacheStore.getMergedUUIDCache();
-    
-    if (cached && cached.uuidMap[normalizedUUID]) {
+
+    if (cached?.uuidMap[normalizedUUID]) {
       return { isValid: true, provider: cached.uuidMap[normalizedUUID] };
     }
 
@@ -217,7 +216,12 @@ export class UUIDProviderManager {
     totalUUIDs: number;
     cacheStatus: 'hit' | 'miss';
     cacheType: string;
-    providerDetails: { name: string; priority: number; available: boolean; uuidCount: number }[];
+    providerDetails: {
+      name: string;
+      priority: number;
+      available: boolean;
+      uuidCount: number;
+    }[];
   }> {
     // 检查缓存状态
     const cached = await this.cacheStore.getMergedUUIDCache();
@@ -243,7 +247,7 @@ export class UUIDProviderManager {
             uuidCount: 0,
           };
         }
-      })
+      }),
     );
 
     return {
@@ -274,13 +278,12 @@ export class UUIDProviderManager {
  * @returns 配置好的管理器实例
  */
 export function createUUIDManager(
-  defaultUUID?: string, 
-  options?: UUIDManagerOptions | number
+  defaultUUID?: string,
+  options?: UUIDManagerOptions | number,
 ): UUIDProviderManager {
   // 兼容旧版 API：第二个参数可以是 cacheTTL 数字
-  const opts: UUIDManagerOptions = typeof options === 'number' 
-    ? { cacheTTL: options } 
-    : (options ?? {});
+  const opts: UUIDManagerOptions =
+    typeof options === 'number' ? { cacheTTL: options } : (options ?? {});
 
   const manager = new UUIDProviderManager(opts);
 

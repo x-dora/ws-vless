@@ -1,19 +1,16 @@
 /**
  * Remnawave API UUID 提供者
- * 
+ *
  * 从 Remnawave 面板 API 获取用户 UUID 列表
  * 文档: https://docs.rw/api#tag/users-controller/GET/api/users
- * 
+ *
  * 使用 Cache API 进行本地缓存，解决 Worker 无状态问题
  */
 
-import type { UUIDProvider, UUIDProviderConfig } from '../types';
-import { isValidUUID } from '../utils/uuid';
+import { CacheAPIStore, DEFAULT_CACHE_CONFIG } from '../cache';
+import type { UUIDProvider } from '../types';
 import { createLogger } from '../utils/logger';
-import { 
-  CacheAPIStore,
-  DEFAULT_CACHE_CONFIG,
-} from '../cache';
+import { isValidUUID } from '../utils/uuid';
 
 const log = createLogger('Remnawave');
 
@@ -97,7 +94,7 @@ export interface RemnawaveProviderConfig {
 export class RemnawaveUUIDProvider implements UUIDProvider {
   public readonly name = 'remnawave';
   public readonly priority: number;
-  
+
   private readonly config: RemnawaveProviderConfig;
   private readonly cacheTTL: number;
 
@@ -139,7 +136,7 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
 
     // 构建 API URL
     const url = new URL('/api/users', apiUrl);
-    
+
     // 创建带超时的请求
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -148,9 +145,9 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
       const response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
         signal: controller.signal,
       });
@@ -159,14 +156,14 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
         throw new Error(`API returned ${response.status}: ${response.statusText}`);
       }
 
-      const data = await response.json() as RemnawaveApiResponse;
+      const data = (await response.json()) as RemnawaveApiResponse;
 
       // 解析响应，支持多种格式
       const users = this.parseUsers(data);
 
       // 过滤并提取 UUID（使用 vlessUuid 字段）
       const uuids: string[] = [];
-      
+
       for (const user of users) {
         // 验证 vlessUuid 格式
         if (!user.vlessUuid || !isValidUUID(user.vlessUuid)) {
@@ -180,14 +177,13 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
         if (user.status && user.status.toLowerCase() === 'disabled') {
           continue;
         }
-        
+
         const normalizedUuid = user.vlessUuid.toLowerCase();
         uuids.push(normalizedUuid);
       }
 
       log.info(`Fetched ${uuids.length} UUIDs from API`);
       return uuids;
-
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         log.error(`Request timeout after ${timeout}ms`);
@@ -211,7 +207,7 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
     }
 
     // { response: { users: [...] } } 格式（Remnawave 标准格式）
-    if (data.response && data.response.users && Array.isArray(data.response.users)) {
+    if (data.response?.users && Array.isArray(data.response.users)) {
       return data.response.users;
     }
 
@@ -286,7 +282,7 @@ export function createRemnawaveProvider(
     priority?: number;
     cacheTTL?: number;
     timeout?: number;
-  }
+  },
 ): RemnawaveUUIDProvider | null {
   // 如果地址或密钥为空，不创建提供者
   if (!apiUrl || !apiKey) {
@@ -302,9 +298,12 @@ export function createRemnawaveProvider(
     return null;
   }
 
-  return new RemnawaveUUIDProvider({
-    apiUrl,
-    apiKey,
-    ...options,
-  }, options?.priority ?? 20);
+  return new RemnawaveUUIDProvider(
+    {
+      apiUrl,
+      apiKey,
+      ...options,
+    },
+    options?.priority ?? 20,
+  );
 }

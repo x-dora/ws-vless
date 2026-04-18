@@ -3,8 +3,8 @@
  * 生成各种客户端（V2Ray、Clash、Sing-box 等）的配置
  */
 
-import type { ConfigGeneratorOptions, ClientConfigType } from '../types';
 import { DEFAULT_PORT, WS_EARLY_DATA_PARAM } from '../config';
+import type { ClientConfigType, ConfigGeneratorOptions } from '../types';
 
 // ============================================================================
 // 配置生成器
@@ -54,7 +54,7 @@ export class ConfigGenerator {
   generateV2rayLink(): string {
     const { userID, hostName, port, path, tls, remarks } = this.options;
     const encodedPath = encodeURIComponent(path);
-    
+
     const params = new URLSearchParams({
       encryption: 'none',
       security: tls ? 'tls' : 'none',
@@ -134,7 +134,6 @@ export class ConfigGenerator {
    * 生成所有格式的配置（带分隔符）
    */
   generateAll(): string {
-    const { hostName } = this.options;
     const separator = '---------------------------------------------------------------';
     const header = '################################################################';
 
@@ -206,7 +205,7 @@ ${header}
 export function generateConfig(
   userID: string,
   hostName: string,
-  type: ClientConfigType = 'all'
+  type: ClientConfigType = 'all',
 ): string {
   const generator = new ConfigGenerator({ userID, hostName });
   return generator.generate(type);

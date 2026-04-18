@@ -100,14 +100,14 @@ export function parse(uuid: string): Uint8Array {
   if (!isValidUUID(uuid)) {
     throw new Error('Invalid UUID format');
   }
-  
+
   const hex = uuid.replace(/-/g, '');
   const bytes = new Uint8Array(16);
-  
+
   for (let i = 0; i < 16; i++) {
     bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
   }
-  
+
   return bytes;
 }
 
@@ -117,10 +117,7 @@ export function parse(uuid: string): Uint8Array {
  * @param uuid2 第二个 UUID（字符串或字节数组）
  * @returns boolean 是否相等
  */
-export function compareUUID(
-  uuid1: string | Uint8Array,
-  uuid2: string | Uint8Array
-): boolean {
+export function compareUUID(uuid1: string | Uint8Array, uuid2: string | Uint8Array): boolean {
   const str1 = typeof uuid1 === 'string' ? uuid1.toLowerCase() : unsafeStringify(uuid1);
   const str2 = typeof uuid2 === 'string' ? uuid2.toLowerCase() : unsafeStringify(uuid2);
   return str1 === str2;

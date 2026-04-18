@@ -47,7 +47,7 @@ export type UUIDValidator = (uuid: string) => boolean;
  */
 export function createUUIDValidator(validUUIDs: string[]): UUIDValidator {
   // 使用 Set 提高查找效率，统一转换为小写
-  const uuidSet = new Set(validUUIDs.map(uuid => uuid.toLowerCase()));
+  const uuidSet = new Set(validUUIDs.map((uuid) => uuid.toLowerCase()));
   return (uuid: string) => uuidSet.has(uuid.toLowerCase());
 }
 
@@ -71,10 +71,7 @@ export function createSingleUUIDValidator(userID: string): UUIDValidator {
  * @param validateUUID UUID 验证器函数，验证 UUID 是否有效
  * @returns HeaderResult 解析结果
  */
-export function processHeader(
-  buffer: ArrayBuffer,
-  validateUUID: UUIDValidator
-): HeaderResult {
+export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator): HeaderResult {
   // 验证最小长度
   if (buffer.byteLength < MIN_HEADER_LENGTH) {
     return {
@@ -105,7 +102,7 @@ export function processHeader(
   // 验证命令类型
   let isUDP = false;
   let isMux = false;
-  
+
   if (command === ProxyCommand.TCP) {
     // TCP 命令
   } else if (command === ProxyCommand.UDP) {
@@ -197,18 +194,16 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
       // IPv4: 4 字节，格式如 192.168.1.1
       addressLength = 4;
       addressValue = new Uint8Array(
-        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength),
       ).join('.');
       break;
 
-    case AddressType.Domain:
+    case AddressType.Domain: {
       // 域名: 第一个字节是长度，后面是域名字符串
-      addressLength = new Uint8Array(
-        buffer.slice(addressValueIndex, addressValueIndex + 1)
-      )[0];
+      addressLength = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + 1))[0];
       const domainStartIndex = addressValueIndex + 1;
       addressValue = new TextDecoder().decode(
-        buffer.slice(domainStartIndex, domainStartIndex + addressLength)
+        buffer.slice(domainStartIndex, domainStartIndex + addressLength),
       );
       // 域名的实际结束位置需要额外加1（长度字节）
       return {
@@ -217,12 +212,13 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
         addressType: addressTypeByte,
         endIndex: domainStartIndex + addressLength,
       };
+    }
 
-    case AddressType.IPv6:
+    case AddressType.IPv6: {
       // IPv6: 16 字节，格式如 2001:0db8:85a3:0000:0000:8a2e:0370:7334
       addressLength = 16;
       const dataView = new DataView(
-        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength),
       );
       const ipv6Parts: string[] = [];
       for (let i = 0; i < 8; i++) {
@@ -230,6 +226,7 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
       }
       addressValue = ipv6Parts.join(':');
       break;
+    }
 
     default:
       return {
@@ -267,4 +264,3 @@ export function createResponseHeader(version: Uint8Array): Uint8Array {
   // 响应格式: [版本, 附加信息长度(0)]
   return new Uint8Array([version[0], 0]);
 }
-

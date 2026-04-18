@@ -1,6 +1,6 @@
 /**
  * 自定义 UUID 提供者示例
- * 
+ *
  * 本文件提供了如何创建自定义 UUID 提供者的示例
  * 用户可以根据自己的需求实现从不同平台获取 UUID 的逻辑
  */
@@ -15,7 +15,7 @@ import { BaseUUIDProvider } from './base';
 /**
  * Cloudflare KV UUID 提供者
  * 从 Cloudflare KV 命名空间获取 UUID 列表
- * 
+ *
  * 使用方法:
  * 1. 在 wrangler.jsonc 中配置 KV 命名空间绑定
  * 2. 在 Worker 中传入 KV 绑定
@@ -25,11 +25,7 @@ export class KVUUIDProvider extends BaseUUIDProvider {
   private readonly kvNamespace: KVNamespace;
   private readonly kvKey: string;
 
-  constructor(
-    kvNamespace: KVNamespace,
-    kvKey: string = 'valid_uuids',
-    priority = 10
-  ) {
+  constructor(kvNamespace: KVNamespace, kvKey: string = 'valid_uuids', priority = 10) {
     super({ enabled: true }, priority);
     this.kvNamespace = kvNamespace;
     this.kvKey = kvKey;
@@ -37,11 +33,11 @@ export class KVUUIDProvider extends BaseUUIDProvider {
 
   protected async doFetchUUIDs(): Promise<string[]> {
     const data = await this.kvNamespace.get(this.kvKey, 'json');
-    
+
     if (Array.isArray(data)) {
       return data.filter((item): item is string => typeof item === 'string');
     }
-    
+
     return [];
   }
 }
@@ -53,7 +49,7 @@ export class KVUUIDProvider extends BaseUUIDProvider {
 /**
  * Cloudflare D1 UUID 提供者
  * 从 Cloudflare D1 数据库获取 UUID 列表
- * 
+ *
  * 使用方法:
  * 1. 创建 D1 数据库并添加 users 表
  * 2. 在 wrangler.jsonc 中配置 D1 绑定
@@ -70,7 +66,7 @@ export class D1UUIDProvider extends BaseUUIDProvider {
       tableName?: string;
       uuidColumn?: string;
       priority?: number;
-    } = {}
+    } = {},
   ) {
     super({ enabled: true }, options.priority ?? 15);
     this.db = db;
@@ -81,7 +77,7 @@ export class D1UUIDProvider extends BaseUUIDProvider {
   protected async doFetchUUIDs(): Promise<string[]> {
     const query = `SELECT ${this.uuidColumn} FROM ${this.tableName} WHERE active = 1`;
     const result = await this.db.prepare(query).all();
-    
+
     return result.results
       .map((row) => (row as Record<string, unknown>)[this.uuidColumn])
       .filter((uuid): uuid is string => typeof uuid === 'string');
@@ -95,7 +91,7 @@ export class D1UUIDProvider extends BaseUUIDProvider {
 /**
  * Telegram Bot UUID 提供者
  * 通过 Telegram Bot API 获取授权用户的 UUID
- * 
+ *
  * 使用方法:
  * 1. 创建 Telegram Bot 并获取 Token
  * 2. 实现自己的后端 API 来管理用户授权
@@ -115,7 +111,7 @@ export class TelegramUUIDProvider extends BaseUUIDProvider {
     const response = await this.fetchWithTimeout(this.config.endpoint, {
       method: 'GET',
       headers: {
-        'Authorization': `Bot ${this.config.authToken}`,
+        Authorization: `Bot ${this.config.authToken}`,
       },
     });
 
@@ -123,7 +119,7 @@ export class TelegramUUIDProvider extends BaseUUIDProvider {
       throw new Error(`Telegram API returned ${response.status}`);
     }
 
-    const data = await response.json() as { users?: { uuid: string }[] };
+    const data = (await response.json()) as { users?: { uuid: string }[] };
     return data.users?.map((u) => u.uuid) ?? [];
   }
 }
@@ -135,7 +131,7 @@ export class TelegramUUIDProvider extends BaseUUIDProvider {
 /**
  * GitHub Gist UUID 提供者
  * 从 GitHub Gist 获取 UUID 列表
- * 
+ *
  * Gist 内容格式（每行一个 UUID）:
  * ```
  * uuid-1
@@ -160,7 +156,7 @@ export class GistUUIDProvider extends BaseUUIDProvider {
     }
 
     const text = await response.text();
-    
+
     // 解析每行作为一个 UUID
     return text
       .split('\n')
@@ -200,13 +196,11 @@ export class TimedUUIDProvider extends BaseUUIDProvider {
       throw new Error(`API returned ${response.status}`);
     }
 
-    const data = await response.json() as { uuids: TimedUUID[] };
+    const data = (await response.json()) as { uuids: TimedUUID[] };
     const now = new Date();
 
     // 过滤掉已过期的 UUID
-    return data.uuids
-      .filter((item) => new Date(item.expiresAt) > now)
-      .map((item) => item.uuid);
+    return data.uuids.filter((item) => new Date(item.expiresAt) > now).map((item) => item.uuid);
   }
 }
 
@@ -216,31 +210,31 @@ export class TimedUUIDProvider extends BaseUUIDProvider {
 
 /**
  * 如何使用自定义提供者:
- * 
+ *
  * 1. 在 src/index.ts 的 initializeUUIDManager 函数中注册提供者:
- * 
+ *
  * ```typescript
  * import { KVUUIDProvider, GistUUIDProvider } from './providers/example-custom';
- * 
+ *
  * function initializeUUIDManager(defaultUUID: string, env: WorkerEnv): UUIDProviderManager {
  *   const manager = createUUIDManager(defaultUUID);
- * 
+ *
  *   // 注册 KV 提供者（需要在 env 中有 KV 绑定）
  *   if (env.UUID_KV) {
  *     manager.register(new KVUUIDProvider(env.UUID_KV));
  *   }
- * 
+ *
  *   // 注册 Gist 提供者
  *   manager.register(new GistUUIDProvider(
  *     'https://gist.githubusercontent.com/user/id/raw/uuids.txt'
  *   ));
- * 
+ *
  *   return manager;
  * }
  * ```
- * 
+ *
  * 2. 确保在 wrangler.jsonc 中配置必要的绑定（KV、D1 等）
- * 
+ *
  * 3. 优先级说明:
  *    - 数字越小优先级越高
  *    - 相同 UUID 会保留高优先级提供者的归属

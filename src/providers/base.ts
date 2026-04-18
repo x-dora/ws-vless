@@ -17,19 +17,19 @@ import { providerLogger } from '../utils/logger';
 export abstract class BaseUUIDProvider implements UUIDProvider {
   /** 提供者名称 */
   public abstract readonly name: string;
-  
+
   /** 提供者优先级（数字越小优先级越高） */
   public readonly priority: number;
-  
+
   /** 提供者配置 */
   protected readonly config: UUIDProviderConfig;
-  
+
   /** 缓存的 UUID 列表 */
   protected cachedUUIDs: string[] = [];
-  
+
   /** 缓存过期时间 */
   protected cacheExpiry: number = 0;
-  
+
   /** 默认缓存时间（毫秒） */
   protected readonly cacheDuration: number = 5 * 60 * 1000; // 5 分钟
 
@@ -99,10 +99,7 @@ export abstract class BaseUUIDProvider implements UUIDProvider {
    * @param url 请求 URL
    * @param options fetch 选项
    */
-  protected async fetchWithTimeout(
-    url: string,
-    options: RequestInit = {}
-  ): Promise<Response> {
+  protected async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
     const timeout = this.config.timeout || 10000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -156,12 +153,12 @@ export class StaticUUIDProvider extends BaseUUIDProvider {
 /**
  * HTTP API UUID 提供者
  * 从远程 HTTP API 获取 UUID 列表
- * 
+ *
  * 期望的 API 响应格式:
  * {
  *   "uuids": ["uuid1", "uuid2", ...]
  * }
- * 
+ *
  * 或者直接返回数组:
  * ["uuid1", "uuid2", ...]
  */
@@ -178,12 +175,12 @@ export class HttpApiUUIDProvider extends BaseUUIDProvider {
     }
 
     const headers: Record<string, string> = {
-      'Accept': 'application/json',
+      Accept: 'application/json',
     };
 
     // 添加认证头
     if (this.config.authToken) {
-      headers['Authorization'] = `Bearer ${this.config.authToken}`;
+      headers.Authorization = `Bearer ${this.config.authToken}`;
     }
 
     const response = await this.fetchWithTimeout(this.config.endpoint, {
@@ -195,15 +192,22 @@ export class HttpApiUUIDProvider extends BaseUUIDProvider {
       throw new Error(`HTTP API returned ${response.status}`);
     }
 
-    const data = await response.json() as unknown;
-    
+    const data = (await response.json()) as unknown;
+
     // 支持两种响应格式
     if (Array.isArray(data)) {
       return data.filter((item): item is string => typeof item === 'string');
     }
-    
-    if (data && typeof data === 'object' && 'uuids' in data && Array.isArray((data as { uuids: unknown[] }).uuids)) {
-      return (data as { uuids: unknown[] }).uuids.filter((item): item is string => typeof item === 'string');
+
+    if (
+      data &&
+      typeof data === 'object' &&
+      'uuids' in data &&
+      Array.isArray((data as { uuids: unknown[] }).uuids)
+    ) {
+      return (data as { uuids: unknown[] }).uuids.filter(
+        (item): item is string => typeof item === 'string',
+      );
     }
 
     throw new Error('Invalid API response format');
