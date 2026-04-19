@@ -98,7 +98,7 @@ describe('Mux TCP fallback', () => {
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: {
-        nat64Prefixes: ['2602:fc59:b0:64::'],
+        nat64Prefixes: ['2602:fc59:11:64::'],
       },
     });
 
@@ -114,7 +114,7 @@ describe('Mux TCP fallback', () => {
       pendingData: [],
     };
 
-    const expected = ipv4ToNat64IPv6('198.51.100.11', '2602:fc59:b0:64::');
+    const expected = ipv4ToNat64IPv6('198.51.100.11', '2602:fc59:11:64::');
 
     await (
       session as unknown as {
@@ -127,7 +127,7 @@ describe('Mux TCP fallback', () => {
 
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(connectMock.mock.calls[1][0]).toMatchObject({
-      hostname: expected,
+      hostname: `[${expected}]`,
       port: 443,
     });
     expect((webSocket as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalled();

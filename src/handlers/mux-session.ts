@@ -25,7 +25,7 @@ import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
-import { resolveRetryTarget } from '../utils/nat64';
+import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
 
 // ============================================================================
 // 常量配置
@@ -465,8 +465,9 @@ export class MuxSession {
         allowRetry: boolean,
         reason: string,
       ): Promise<void> => {
+        const hostname = formatSocketHostname(address);
         const tcpSocket: Socket = connect({
-          hostname: address,
+          hostname,
           port: subConn.port,
         });
 
@@ -493,7 +494,7 @@ export class MuxSession {
 
             retryAttempted = true;
             this.log.debug(
-              `Mux retry via ${target.mode} ${target.address}:${subConn.port} (${reason})`,
+              `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
             );
             await connectAndPipe(target.address, false, 'retry');
             return;
@@ -533,7 +534,7 @@ export class MuxSession {
 
               retryAttempted = true;
               this.log.debug(
-                `Mux retry via ${target.mode} ${target.address}:${subConn.port} (${reason})`,
+                `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
               );
               await connectAndPipe(target.address, false, 'retry');
               return true;

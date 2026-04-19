@@ -126,7 +126,7 @@ describe('TCP outbound fallback', () => {
     connectMock.mockReturnValueOnce(createEmptySocket()).mockReturnValueOnce(createEmptySocket());
 
     const webSocket = createWebSocketStub();
-    const expected = ipv4ToNat64IPv6('203.0.113.10', '2602:fc59:b0:64::');
+    const expected = ipv4ToNat64IPv6('203.0.113.10', '2602:fc59:11:64::');
 
     await handleTCPOutBound(
       { value: null },
@@ -137,18 +137,18 @@ describe('TCP outbound fallback', () => {
       webSocket,
       new Uint8Array([0, 0]),
       createLog(),
-      { nat64Prefixes: ['2602:fc59:b0:64::'] },
+      { nat64Prefixes: ['2602:fc59:11:64::'] },
       null,
     );
 
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(connectMock.mock.calls[1][0]).toMatchObject({
-      hostname: expected,
+      hostname: `[${expected}]`,
       port: 8443,
     });
   });
 
-  it('does not attempt an invalid retry when the original target is already IPv6', async () => {
+  it('wraps direct IPv6 targets for connect()', async () => {
     connectMock.mockReturnValueOnce(createEmptySocket());
 
     const webSocket = createWebSocketStub();
@@ -162,11 +162,40 @@ describe('TCP outbound fallback', () => {
       webSocket,
       new Uint8Array([0, 0]),
       createLog(),
-      { nat64Prefixes: ['2602:fc59:b0:64::'] },
+      { nat64Prefixes: ['2602:fc59:11:64::'] },
       null,
     );
 
     expect(connectMock).toHaveBeenCalledTimes(1);
+    expect(connectMock.mock.calls[0][0]).toMatchObject({
+      hostname: '[2001:db8::10]',
+      port: 443,
+    });
     expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+  });
+
+  it('wraps IPv6 PROXY_IP values for retry connect()', async () => {
+    connectMock.mockReturnValueOnce(createEmptySocket()).mockReturnValueOnce(createEmptySocket());
+
+    const webSocket = createWebSocketStub();
+
+    await handleTCPOutBound(
+      { value: null },
+      '203.0.113.10',
+      AddressType.IPv4,
+      8443,
+      new Uint8Array([9, 9, 9]),
+      webSocket,
+      new Uint8Array([0, 0]),
+      createLog(),
+      { proxyIP: '2001:db8::5' },
+      null,
+    );
+
+    expect(connectMock).toHaveBeenCalledTimes(2);
+    expect(connectMock.mock.calls[1][0]).toMatchObject({
+      hostname: '[2001:db8::5]',
+      port: 8443,
+    });
   });
 });

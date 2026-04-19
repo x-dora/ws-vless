@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AddressType } from '../src/types';
 import {
+  formatSocketHostname,
   ipv4ToNat64IPv6,
   resolveDomainToIPv4,
   resolveNat64Target,
@@ -8,11 +9,17 @@ import {
   selectNat64Prefix,
 } from '../src/utils/nat64';
 
-const PREFIX = '2602:fc59:b0:64::';
+const PREFIX = '2602:fc59:11:64::';
 
 describe('NAT64 utilities', () => {
   it('converts IPv4 addresses into NAT64 IPv6 literals', () => {
-    expect(ipv4ToNat64IPv6('192.0.2.33', PREFIX)).toBe('2602:fc59:b0:64::c000:0221');
+    expect(ipv4ToNat64IPv6('192.0.2.33', PREFIX)).toBe('2602:fc59:11:64::c000:0221');
+  });
+
+  it('wraps IPv6 literals for connect()', () => {
+    expect(formatSocketHostname('2001:db8::1')).toBe('[2001:db8::1]');
+    expect(formatSocketHostname('[2001:db8::1]')).toBe('[2001:db8::1]');
+    expect(formatSocketHostname('203.0.113.8')).toBe('203.0.113.8');
   });
 
   it('resolves domain A records and maps them into NAT64 targets', async () => {
@@ -35,7 +42,7 @@ describe('NAT64 utilities', () => {
     });
 
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(target).toBe('2602:fc59:b0:64::c633:6407');
+    expect(target).toBe('2602:fc59:11:64::c633:6407');
   });
 
   it('returns null for IPv6 targets and when no A record is available', async () => {
@@ -103,7 +110,7 @@ describe('NAT64 utilities', () => {
         nat64Prefixes: [PREFIX],
       }),
     ).resolves.toEqual({
-      address: '2602:fc59:b0:64::cb00:710a',
+      address: '2602:fc59:11:64::cb00:710a',
       mode: 'nat64',
     });
   });

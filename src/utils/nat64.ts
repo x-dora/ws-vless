@@ -30,6 +30,11 @@ function sanitizeHostLiteral(value: string): string {
   return value.trim().replace(/^\[(.*)\]$/, '$1');
 }
 
+export function formatSocketHostname(value: string): string {
+  const normalized = sanitizeHostLiteral(value);
+  return isIPv6Address(normalized) ? `[${normalized}]` : normalized;
+}
+
 export function parseNat64Prefixes(
   raw: string | readonly string[] | undefined,
   fallback: readonly string[] = [],

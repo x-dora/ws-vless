@@ -23,7 +23,7 @@ export const DEFAULT_PROXY_IP = '';
 /**
  * 默认 NAT64 前缀
  */
-export const DEFAULT_NAT64_PREFIXES = ['2602:fc59:b0:64::'] as const;
+export const DEFAULT_NAT64_PREFIXES = ['2602:fc59:11:64::'] as const;
 
 /**
  * 默认 DNS 服务器

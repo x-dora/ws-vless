@@ -9,7 +9,7 @@ import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
 import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
-import { resolveRetryTarget } from '../utils/nat64';
+import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
 
 // ============================================================================
 // TCP 连接处理
@@ -54,20 +54,21 @@ export async function handleTCPOutBound(
     port: number,
     mode: 'direct' | 'proxy-ip' | 'nat64',
   ): Promise<Socket> {
+    const hostname = formatSocketHostname(address);
     const tcpSocket: Socket = connect({
-      hostname: address,
+      hostname,
       port: port,
     });
 
     remoteSocket.value = tcpSocket;
     log.debug(
       mode === 'direct'
-        ? `Connecting to ${address}:${port}`
-        : `Connecting via ${mode} ${address}:${port}`,
+        ? `Connecting to ${hostname}:${port}`
+        : `Connecting via ${mode} ${hostname}:${port}`,
     );
 
     await tcpSocket.opened;
-    log.debug(`Connected to ${address}:${port}`);
+    log.debug(`Connected to ${hostname}:${port}`);
 
     // 写入初始数据（通常是 TLS Client Hello）
     const writer = tcpSocket.writable.getWriter();
