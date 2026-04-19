@@ -142,6 +142,8 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
+      // 获取足够多的用户，避免分页问题
+      url.searchParams.set('size', '1000');
       const response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
