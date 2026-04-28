@@ -13,11 +13,16 @@ import { isMuxConnection } from './mux';
 // ============================================================================
 
 /**
- * 协议头最小长度
- * 版本(1) + UUID(16) + 附加信息长度(1) + 命令(1) + 端口(2) + 地址类型(1) = 22
- * 加上最小地址长度(1或4)，至少需要 24 字节
+ * 读取协议命令前的最小长度
+ * 版本(1) + UUID(16) + 附加信息长度(1) + 命令(1)
  */
-const MIN_HEADER_LENGTH = 24;
+const MIN_COMMAND_HEADER_LENGTH = 19;
+
+/**
+ * 统一的短包错误信息
+ * 用于分片/流式读取时提示继续累积数据
+ */
+const BUFFER_TOO_SHORT_MESSAGE = 'Invalid data: buffer too short';
 
 /**
  * UUID 字段位置
@@ -72,19 +77,21 @@ export function createSingleUUIDValidator(userID: string): UUIDValidator {
  * @returns HeaderResult 解析结果
  */
 export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator): HeaderResult {
-  // 验证最小长度
-  if (buffer.byteLength < MIN_HEADER_LENGTH) {
+  const bytes = new Uint8Array(buffer);
+
+  // 至少需要读取到 command 字段
+  if (bytes.byteLength < MIN_COMMAND_HEADER_LENGTH) {
     return {
       hasError: true,
-      message: 'Invalid data: buffer too short',
+      message: BUFFER_TOO_SHORT_MESSAGE,
     };
   }
 
   // 提取协议版本（第一个字节）
-  const version = new Uint8Array(buffer.slice(0, 1));
+  const version = bytes.subarray(0, 1);
 
   // 提取并验证 UUID
-  const receivedUUID = stringify(new Uint8Array(buffer.slice(UUID_START, UUID_END)));
+  const receivedUUID = stringify(bytes.subarray(UUID_START, UUID_END));
   if (!validateUUID(receivedUUID)) {
     return {
       hasError: true,
@@ -93,11 +100,17 @@ export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator):
   }
 
   // 读取附加信息长度（当前跳过附加信息）
-  const optLength = new Uint8Array(buffer.slice(OPT_LENGTH_INDEX, OPT_LENGTH_INDEX + 1))[0];
+  const optLength = bytes[OPT_LENGTH_INDEX];
 
   // 读取命令类型
   const commandIndex = 18 + optLength;
-  const command = new Uint8Array(buffer.slice(commandIndex, commandIndex + 1))[0];
+  if (bytes.byteLength < commandIndex + 1) {
+    return {
+      hasError: true,
+      message: BUFFER_TOO_SHORT_MESSAGE,
+    };
+  }
+  const command = bytes[commandIndex];
 
   // 验证命令类型
   let isUDP = false;
@@ -133,12 +146,17 @@ export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator):
 
   // 读取端口（大端序）
   const portIndex = commandIndex + 1;
-  const portBuffer = buffer.slice(portIndex, portIndex + 2);
-  const portRemote = new DataView(portBuffer).getUint16(0);
+  if (bytes.byteLength < portIndex + 2) {
+    return {
+      hasError: true,
+      message: BUFFER_TOO_SHORT_MESSAGE,
+    };
+  }
+  const portRemote = (bytes[portIndex] << 8) | bytes[portIndex + 1];
 
   // 读取地址
   const addressTypeIndex = portIndex + 2;
-  const addressResult = parseAddress(buffer, addressTypeIndex);
+  const addressResult = parseAddress(bytes, addressTypeIndex);
   if (addressResult.hasError) {
     return addressResult;
   }
@@ -182,8 +200,15 @@ interface AddressParseResult {
  * @param startIndex 地址字段起始位置
  * @returns AddressParseResult 解析结果
  */
-function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResult {
-  const addressTypeByte = new Uint8Array(buffer.slice(startIndex, startIndex + 1))[0];
+function parseAddress(buffer: Uint8Array, startIndex: number): AddressParseResult {
+  if (buffer.byteLength < startIndex + 1) {
+    return {
+      hasError: true,
+      message: BUFFER_TOO_SHORT_MESSAGE,
+    };
+  }
+
+  const addressTypeByte = buffer[startIndex];
   const addressValueIndex = startIndex + 1;
 
   let addressLength = 0;
@@ -193,17 +218,35 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
     case AddressType.IPv4:
       // IPv4: 4 字节，格式如 192.168.1.1
       addressLength = 4;
-      addressValue = new Uint8Array(
-        buffer.slice(addressValueIndex, addressValueIndex + addressLength),
-      ).join('.');
+      if (buffer.byteLength < addressValueIndex + addressLength) {
+        return {
+          hasError: true,
+          message: BUFFER_TOO_SHORT_MESSAGE,
+        };
+      }
+      addressValue = buffer
+        .subarray(addressValueIndex, addressValueIndex + addressLength)
+        .join('.');
       break;
 
     case AddressType.Domain: {
       // 域名: 第一个字节是长度，后面是域名字符串
-      addressLength = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+      if (buffer.byteLength < addressValueIndex + 1) {
+        return {
+          hasError: true,
+          message: BUFFER_TOO_SHORT_MESSAGE,
+        };
+      }
+      addressLength = buffer[addressValueIndex];
       const domainStartIndex = addressValueIndex + 1;
+      if (buffer.byteLength < domainStartIndex + addressLength) {
+        return {
+          hasError: true,
+          message: BUFFER_TOO_SHORT_MESSAGE,
+        };
+      }
       addressValue = new TextDecoder().decode(
-        buffer.slice(domainStartIndex, domainStartIndex + addressLength),
+        buffer.subarray(domainStartIndex, domainStartIndex + addressLength),
       );
       // 域名的实际结束位置需要额外加1（长度字节）
       return {
@@ -217,8 +260,16 @@ function parseAddress(buffer: ArrayBuffer, startIndex: number): AddressParseResu
     case AddressType.IPv6: {
       // IPv6: 16 字节，格式如 2001:0db8:85a3:0000:0000:8a2e:0370:7334
       addressLength = 16;
+      if (buffer.byteLength < addressValueIndex + addressLength) {
+        return {
+          hasError: true,
+          message: BUFFER_TOO_SHORT_MESSAGE,
+        };
+      }
       const dataView = new DataView(
-        buffer.slice(addressValueIndex, addressValueIndex + addressLength),
+        buffer.buffer,
+        buffer.byteOffset + addressValueIndex,
+        addressLength,
       );
       const ipv6Parts: string[] = [];
       for (let i = 0; i < 8; i++) {
