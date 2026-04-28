@@ -3,7 +3,6 @@
 ## 本地单测
 
 - 修改代码后先跑 `pnpm test`。
-- 重点关注 `test/tcp.spec.ts`、`test/mux-session.spec.ts`、`test/nat64.spec.ts` 的回归结果。
 
 ## 远程实机验证
 

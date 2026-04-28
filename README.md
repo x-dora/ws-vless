@@ -80,6 +80,25 @@ npm run deploy
 | `DNS_SERVER` | 否 | DNS 服务器地址 |
 | `LOG_LEVEL` | 否 | 日志级别：OFF/ERROR/WARN/INFO/DEBUG |
 
+## WebSocket 请求级重试覆盖
+
+WebSocket 请求支持通过查询参数临时覆盖 `PROXY_IP` 和 `NAT64_PREFIXES`，仅对当前请求生效，不会修改全局环境变量：
+
+- `PROXY_IP` 或 `proxy_ip`
+- `NAT64_PREFIXES` 或 `nat64_prefixes`
+
+规则说明：
+
+- 请求参数优先级高于环境变量。
+- 大小写同时出现时，优先使用大写参数（`PROXY_IP`、`NAT64_PREFIXES`）。
+- 空值会被忽略并回退到环境变量（例如 `?PROXY_IP=&NAT64_PREFIXES=`）。
+
+示例：
+
+```text
+wss://your-worker.workers.dev/?PROXY_IP=198.51.100.8&NAT64_PREFIXES=64:ff9b::,2602:fc59:11:64::
+```
+
 ## API 端点
 
 所有 API 端点需要密钥认证：

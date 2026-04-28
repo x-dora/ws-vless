@@ -18,6 +18,7 @@
  */
 
 import { getConfig } from './config';
+import { resolveRetryOverrides } from './config/request-overrides';
 import { createUUIDValidator } from './core/header';
 import { handleTunnelOverWS } from './handlers/connection';
 import {
@@ -119,6 +120,12 @@ export default {
       const upgradeHeader = request.headers.get('Upgrade');
 
       if (upgradeHeader === 'websocket') {
+        const url = new URL(request.url);
+        const retryOverrides = resolveRetryOverrides(url.searchParams, {
+          proxyIP: config.proxyIP,
+          nat64Prefixes: config.nat64Prefixes,
+        });
+
         // 处理 WebSocket 代理连接
         const muxEnabled = env.MUX_ENABLED !== 'false'; // 默认启用
 
@@ -133,8 +140,8 @@ export default {
 
         return await handleTunnelOverWS(request, {
           validateUUID,
-          proxyIP: config.proxyIP,
-          nat64Prefixes: config.nat64Prefixes,
+          proxyIP: retryOverrides.proxyIP,
+          nat64Prefixes: retryOverrides.nat64Prefixes,
           nat64ResolverURL: config.nat64ResolverURL,
           dnsServer: config.dnsServer,
           muxEnabled,
