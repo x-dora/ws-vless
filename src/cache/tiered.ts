@@ -10,6 +10,7 @@
  */
 
 import { createLogger } from '../utils/logger';
+import type { SubrequestBudget } from '../utils/subrequest-budget';
 import { CacheAPIStore } from './cache-api';
 import { D1Store } from './d1';
 import { KVStore } from './kv';
@@ -26,6 +27,8 @@ export interface TieredCacheOptions {
   kv?: KVNamespace;
   /** D1 数据库（可选） */
   d1?: D1Database;
+  /** 统一出站预算（可选） */
+  budget?: SubrequestBudget;
   /** L2 写入间隔（毫秒），默认 60000 */
   l2WriteInterval?: number;
 }
@@ -50,11 +53,11 @@ export class TieredCache implements CacheStore {
 
   constructor(options: TieredCacheOptions = {}) {
     // L1 始终使用 Cache API
-    this.l1 = new CacheAPIStore();
+    this.l1 = new CacheAPIStore(options.budget);
 
     // L2 优先使用 KV，其次 D1
     if (options.kv) {
-      const kvStore = new KVStore(options.kv);
+      const kvStore = new KVStore(options.kv, options.budget);
       if (kvStore.isAvailable()) {
         this.l2 = kvStore;
         log.info('L2=KV');
@@ -62,7 +65,7 @@ export class TieredCache implements CacheStore {
     }
 
     if (!this.l2 && options.d1) {
-      const d1Store = new D1Store(options.d1);
+      const d1Store = new D1Store(options.d1, options.budget);
       if (d1Store.isAvailable()) {
         this.l2 = d1Store;
         log.info('L2=D1');

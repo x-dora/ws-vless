@@ -3,6 +3,8 @@
  * 定义项目中使用的所有 TypeScript 类型和接口
  */
 
+import type { SubrequestBudget } from '../utils/subrequest-budget';
+
 // ============================================================================
 // 环境变量类型
 // ============================================================================
@@ -52,6 +54,10 @@ export interface WorkerEnv {
   MUX_ENABLED?: string;
   /** Mux 连接超时时间（秒），默认 300 */
   MUX_TIMEOUT?: string;
+  /** 统一出站预算上限（默认 48） */
+  SUBREQUEST_LIMIT?: string;
+  /** 兼容旧名，优先级低于 SUBREQUEST_LIMIT */
+  MAX_SUBREQUESTS?: string;
 
   // =========================================================================
   // 日志配置
@@ -172,6 +178,8 @@ export interface UUIDProviderConfig {
   headers?: Record<string, string>;
   /** 请求超时时间（毫秒） */
   timeout?: number;
+  /** 统一出站预算 */
+  budget?: SubrequestBudget;
 }
 
 /**

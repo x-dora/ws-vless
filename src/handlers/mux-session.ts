@@ -26,15 +26,20 @@ import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
+import {
+  createSubrequestBudget,
+  fetchWithBudget,
+  isSubrequestBudgetExceededError,
+  type SubrequestBudget,
+} from '../utils/subrequest-budget';
 
 // ============================================================================
 // 常量配置
 // ============================================================================
 
 /**
- * Cloudflare Workers 子请求限制
- * - 免费计划：50 个子请求/请求
- * - 付费计划：1000 个子请求/请求
+ * 默认统一出站预算
+ * 兼容免费计划的保守值
  */
 const MAX_SUBREQUESTS = 48;
 
@@ -192,7 +197,7 @@ export interface SessionStats {
   bytesSent: number;
   /** 已接收的字节数 */
   bytesReceived: number;
-  /** 是否达到子请求上限 */
+  /** 是否达到统一预算上限 */
   limitReached: boolean;
   /** 会话开始时间 */
   startTime: number;
@@ -211,8 +216,10 @@ export interface MuxSessionOptions {
   retryOptions?: OutboundRetryOptions;
   dnsServer?: string;
   timeout?: number;
-  /** 最大子请求数（默认 48） */
+  /** 默认预算上限（兼容旧配置） */
   maxSubrequests?: number;
+  /** 统一出站预算（优先于 maxSubrequests） */
+  budget?: SubrequestBudget;
 }
 
 // ============================================================================
@@ -246,7 +253,7 @@ export class MuxSession {
   private retryOptions?: OutboundRetryOptions;
   private dnsServer: string;
   private timeout: number;
-  private maxSubrequests: number;
+  private budget: SubrequestBudget;
 
   // 缓冲区
   private buffer: Uint8Array = new Uint8Array(0);
@@ -264,7 +271,8 @@ export class MuxSession {
     this.retryOptions = options.retryOptions;
     this.dnsServer = options.dnsServer || DEFAULT_DNS_SERVER;
     this.timeout = options.timeout || 300000;
-    this.maxSubrequests = options.maxSubrequests || MAX_SUBREQUESTS;
+    this.budget =
+      options.budget ?? createSubrequestBudget(options.maxSubrequests ?? MAX_SUBREQUESTS);
 
     // 初始化统计
     this.stats = {
@@ -364,6 +372,10 @@ export class MuxSession {
   // ==========================================================================
 
   private async handleFrame(frame: MuxFrame): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     const { metadata, newConnection, udpAddress, data } = frame;
     const { id, status } = metadata;
 
@@ -401,24 +413,16 @@ export class MuxSession {
     // 新连接：从已结束集合中移除（ID 可能被复用）
     this.endedSessions.delete(id);
 
-    // 检查子请求限制
     if (isTCP) {
-      if (this.stats.limitReached || this.stats.totalTCPConnections >= this.maxSubrequests) {
-        this.stats.limitReached = true;
-        this.log.warn(
-          `Mux REJECTED: id=${id}, ${conn.address}:${conn.port} [limit: ${this.stats.totalTCPConnections}/${this.maxSubrequests}]`,
-        );
-        this.sendEndFrame(id);
-        this.markSessionEnded(id);
-        return;
-      }
       this.stats.totalTCPConnections++;
       this.log.debug(
-        `Mux New: id=${id}, ${conn.address}:${conn.port} [${this.stats.totalTCPConnections}/${this.maxSubrequests}]`,
+        `Mux New: id=${id}, ${conn.address}:${conn.port} [tcp=${this.stats.totalTCPConnections}, budget=${this.budget.describe()}]`,
       );
     } else {
       this.stats.totalUDPConnections++;
-      this.log.debug(`Mux New (UDP): id=${id}, ${conn.address}:${conn.port}`);
+      this.log.debug(
+        `Mux New (UDP): id=${id}, ${conn.address}:${conn.port} [budget=${this.budget.describe()}]`,
+      );
     }
 
     // 创建子连接
@@ -457,6 +461,10 @@ export class MuxSession {
     subConn: SubConnection,
     initialData?: Uint8Array,
   ): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     try {
       let retryAttempted = false;
 
@@ -465,6 +473,7 @@ export class MuxSession {
         allowRetry: boolean,
         reason: string,
       ): Promise<void> => {
+        this.budget.consume(1, `mux tcp connect ${address}:${subConn.port}`);
         const hostname = formatSocketHostname(address);
         const tcpSocket: Socket = connect({
           hostname,
@@ -501,6 +510,13 @@ export class MuxSession {
           }
 
           throw error;
+        }
+
+        if (this.closed || subConn.closed) {
+          try {
+            tcpSocket.close();
+          } catch {}
+          return;
         }
 
         subConn.writer = tcpSocket.writable.getWriter();
@@ -547,6 +563,14 @@ export class MuxSession {
 
       await connectAndPipe(subConn.address, true, 'initial connect failure');
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        this.stats.limitReached = true;
+        if (!this.closed) {
+          this.log.warn(`Mux budget exhausted: ${this.budget.describe()} / ${this.budget.limit}`);
+          this.close();
+        }
+        return;
+      }
       this.log.error(`TCP error id=${subConn.id}: ${error}`);
       this.sendEndFrame(subConn.id);
       subConn.closed = true;
@@ -586,6 +610,10 @@ export class MuxSession {
   // ==========================================================================
 
   private async handleUDPSubConnection(subConn: SubConnection, data?: Uint8Array): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     if (!data || data.length === 0) {
       return;
     }
@@ -601,24 +629,48 @@ export class MuxSession {
   }
 
   private async handleDNSQuery(id: number, dnsQuery: Uint8Array): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DNS_TIMEOUT_MS);
+
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), DNS_TIMEOUT_MS);
+      const response = await fetchWithBudget(
+        this.budget,
+        this.dnsServer,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/dns-message' },
+          body: dnsQuery,
+          signal: controller.signal,
+        },
+        'mux dns doh fetch',
+      );
 
-      const response = await fetch(this.dnsServer, {
-        method: 'POST',
-        headers: { 'content-type': 'application/dns-message' },
-        body: dnsQuery,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
       const dnsResult = await response.arrayBuffer();
+
+      if (this.closed) {
+        return;
+      }
 
       this.sendDataToWebSocket(id, new Uint8Array(dnsResult));
       this.log.debug(`DNS success: ${dnsResult.byteLength} bytes`);
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        this.stats.limitReached = true;
+        if (!this.closed) {
+          this.log.warn(
+            `Mux DNS budget exhausted: ${this.budget.describe()} / ${this.budget.limit}`,
+          );
+          this.close();
+        }
+        return;
+      }
       this.log.error(`DNS error: ${error}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -631,6 +683,10 @@ export class MuxSession {
     data?: Uint8Array,
     _udpAddress?: MuxFrame['udpAddress'],
   ): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     const subConn = this.connections.get(id);
 
     // 参考 Xray：未找到会话时发送关闭帧通知对端
@@ -674,6 +730,10 @@ export class MuxSession {
   // ==========================================================================
 
   private async handleEndConnection(id: number, data?: Uint8Array): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     const subConn = this.connections.get(id);
 
     // 只有会话存在时才打印日志和处理，避免重复日志

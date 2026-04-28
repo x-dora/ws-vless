@@ -13,6 +13,11 @@ import type { ConnLogFunction, RemoteSocketWrapper } from '../types';
 import { makeReadableWebSocketStream, safeCloseWebSocket } from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
 import type { OutboundRetryOptions } from '../utils/nat64';
+import {
+  createBudgetedFetcher,
+  isSubrequestBudgetExceededError,
+  type SubrequestBudget,
+} from '../utils/subrequest-budget';
 import { createMuxSession, type MuxSession } from './mux-session';
 import { handleTCPOutBound } from './tcp';
 import { handleUDPOutBound, type UDPWriteFunction } from './udp';
@@ -33,12 +38,16 @@ export interface ConnectionHandlerOptions {
   nat64Prefixes?: string[];
   /** NAT64 A 记录解析器 */
   nat64ResolverURL?: string;
+  /** NAT64 解析 fetcher（用于预算计数） */
+  nat64Fetcher?: typeof fetch;
   /** DNS 服务器地址 */
   dnsServer?: string;
   /** 是否启用 Mux 多路复用 */
   muxEnabled?: boolean;
   /** 流量上报配置（可选） */
   statsReporter?: StatsReporterConfig;
+  /** 统一出站预算（可选） */
+  budget?: SubrequestBudget;
   /** waitUntil 函数（用于后台任务） */
   waitUntil?: (promise: Promise<unknown>) => void;
 }
@@ -63,9 +72,11 @@ export async function handleTunnelOverWS(
     proxyIP,
     nat64Prefixes,
     nat64ResolverURL,
+    nat64Fetcher,
     dnsServer,
     muxEnabled = true,
     statsReporter,
+    budget,
     waitUntil,
   } = options;
 
@@ -82,7 +93,12 @@ export async function handleTunnelOverWS(
 
   // 流量追踪器和上报函数
   let trafficTracker: TrafficTracker | null = null;
-  const reportStats = statsReporter ? createStatsReporter(statsReporter) : async () => true;
+  const reportStats = statsReporter
+    ? createStatsReporter({
+        ...statsReporter,
+        budget,
+      })
+    : async () => true;
 
   /**
    * 日志函数 - 使用统一日志系统
@@ -110,6 +126,7 @@ export async function handleTunnelOverWS(
     proxyIP,
     nat64Prefixes,
     resolverURL: nat64ResolverURL,
+    fetcher: nat64Fetcher ?? createBudgetedFetcher(budget, 'nat64 resolver fetch'),
   };
 
   // Mux 会话（如果是 Mux 连接）
@@ -191,6 +208,7 @@ export async function handleTunnelOverWS(
               log,
               retryOptions,
               dnsServer,
+              budget,
             });
 
             // 处理初始数据
@@ -206,7 +224,13 @@ export async function handleTunnelOverWS(
             }
 
             // DNS 查询
-            const { write } = await handleUDPOutBound(webSocket, responseHeader, log, dnsServer);
+            const { write } = await handleUDPOutBound(
+              webSocket,
+              responseHeader,
+              log,
+              dnsServer,
+              budget,
+            );
             udpStreamWrite = write;
             udpStreamWrite(rawClientData);
           } else {
@@ -222,6 +246,7 @@ export async function handleTunnelOverWS(
               log,
               retryOptions,
               trafficTracker,
+              budget,
             ).catch((error) => {
               log.error('TCP outbound error', String(error));
               safeCloseWebSocket(webSocket);
@@ -289,6 +314,12 @@ export async function handleTunnelOverWS(
       }),
     )
     .catch((err) => {
+      if (isSubrequestBudgetExceededError(err)) {
+        log.warn(`Subrequest budget exhausted: ${budget?.describe() ?? 'unknown'}`);
+        muxSession?.close();
+        safeCloseWebSocket(webSocket);
+        return;
+      }
       log.error('ReadableWebSocketStream pipeTo error', String(err));
     });
 

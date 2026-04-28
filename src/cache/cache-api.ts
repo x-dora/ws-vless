@@ -6,6 +6,7 @@
  */
 
 import { cacheLogger } from '../utils/logger';
+import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
 import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 
 /**
@@ -26,12 +27,23 @@ function getCacheKey(key: string): string {
 export class CacheAPIStore implements CacheStore {
   readonly name = 'CacheAPI';
 
+  private readonly budget?: SubrequestBudget;
+
+  constructor(budget?: SubrequestBudget) {
+    this.budget = budget;
+  }
+
   isAvailable(): boolean {
     return typeof caches !== 'undefined' && caches.default !== undefined;
   }
 
   async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
+    if (!this.isAvailable()) {
+      return null;
+    }
+
     try {
+      this.budget?.consume(1, `CacheAPI.match ${provider}`);
       const cache = caches.default;
       const request = new Request(getCacheKey(`uuids:${provider}`));
       const response = await cache.match(request);
@@ -50,13 +62,21 @@ export class CacheAPIStore implements CacheStore {
 
       return data;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[CacheAPI] Get UUIDs error (${provider}):`, error);
       return null;
     }
   }
 
   async setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void> {
+    if (!this.isAvailable()) {
+      return;
+    }
+
     try {
+      this.budget?.consume(1, `CacheAPI.put ${provider}`);
       const cache = caches.default;
       const request = new Request(getCacheKey(`uuids:${provider}`));
       const now = Date.now();
@@ -77,22 +97,38 @@ export class CacheAPIStore implements CacheStore {
 
       await cache.put(request, response);
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[CacheAPI] Set UUIDs error (${provider}):`, error);
     }
   }
 
   async deleteCachedUUIDs(provider: string): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
     try {
+      this.budget?.consume(1, `CacheAPI.delete ${provider}`);
       const cache = caches.default;
       return await cache.delete(new Request(getCacheKey(`uuids:${provider}`)));
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[CacheAPI] Delete UUIDs error (${provider}):`, error);
       return false;
     }
   }
 
   async getMergedUUIDCache(): Promise<MergedUUIDCache | null> {
+    if (!this.isAvailable()) {
+      return null;
+    }
+
     try {
+      this.budget?.consume(1, 'CacheAPI.match merged');
       const cache = caches.default;
       const response = await cache.match(new Request(getCacheKey('uuids:merged')));
 
@@ -109,13 +145,21 @@ export class CacheAPIStore implements CacheStore {
 
       return data;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[CacheAPI] Get merged cache error:', error);
       return null;
     }
   }
 
   async setMergedUUIDCache(uuidMap: Record<string, string>, ttlSeconds: number): Promise<void> {
+    if (!this.isAvailable()) {
+      return;
+    }
+
     try {
+      this.budget?.consume(1, 'CacheAPI.put merged');
       const cache = caches.default;
       const request = new Request(getCacheKey('uuids:merged'));
       const now = Date.now();
@@ -135,15 +179,26 @@ export class CacheAPIStore implements CacheStore {
 
       await cache.put(request, response);
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[CacheAPI] Set merged cache error:', error);
     }
   }
 
   async deleteMergedUUIDCache(): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
     try {
+      this.budget?.consume(1, 'CacheAPI.delete merged');
       const cache = caches.default;
       return await cache.delete(new Request(getCacheKey('uuids:merged')));
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[CacheAPI] Delete merged cache error:', error);
       return false;
     }

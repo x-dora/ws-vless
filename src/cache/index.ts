@@ -40,7 +40,7 @@ export function createCacheStore(options?: TieredCacheOptions): CacheStore {
   // 如果没有配置 KV/D1，直接使用 Cache API
   if (!options?.kv && !options?.d1) {
     log.debug('L1 only (CacheAPI)');
-    return new CacheAPIStore();
+    return new CacheAPIStore(options?.budget);
   }
 
   // 使用分层缓存

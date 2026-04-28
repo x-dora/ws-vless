@@ -3,6 +3,7 @@ import { MuxNetwork, type SubConnection } from '../src/core/mux';
 import { createMuxSession } from '../src/handlers/mux-session';
 import { AddressType, type ConnLogFunction, WS_READY_STATE } from '../src/types';
 import { ipv4ToNat64IPv6 } from '../src/utils/nat64';
+import { createSubrequestBudget } from '../src/utils/subrequest-budget';
 
 const { connectMock } = vi.hoisted(() => ({
   connectMock: vi.fn(),
@@ -131,5 +132,48 @@ describe('Mux TCP fallback', () => {
       port: 443,
     });
     expect((webSocket as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalled();
+  });
+
+  it('closes the whole mux session when the retry budget is exhausted', async () => {
+    connectMock.mockReturnValueOnce(createEmptySocket());
+
+    const webSocket = createWebSocketStub();
+    const session = createMuxSession({
+      webSocket,
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: {
+        nat64Prefixes: ['2602:fc59:11:64::'],
+      },
+      budget: createSubrequestBudget(1),
+    });
+
+    const subConn: SubConnection = {
+      id: 8,
+      address: '198.51.100.12',
+      addressType: AddressType.IPv4,
+      port: 443,
+      network: MuxNetwork.TCP,
+      closed: false,
+      createdAt: Date.now(),
+      ready: false,
+      pendingData: [],
+    };
+
+    await (
+      session as unknown as {
+        handleTCPSubConnection: (
+          connection: SubConnection,
+          initialData?: Uint8Array,
+        ) => Promise<void>;
+      }
+    ).handleTCPSubConnection(subConn, new Uint8Array([1, 2, 3]));
+
+    expect(connectMock).toHaveBeenCalledTimes(1);
+    expect(session.isClosed).toBe(true);
+    expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+    expect(
+      (webSocket as unknown as { send: ReturnType<typeof vi.fn> }).send,
+    ).not.toHaveBeenCalled();
   });
 });

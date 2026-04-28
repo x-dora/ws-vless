@@ -10,6 +10,7 @@ import { WS_READY_STATE } from '../types';
 import { safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
+import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
 
 // ============================================================================
 // TCP 连接处理
@@ -40,6 +41,7 @@ export async function handleTCPOutBound(
   log: ConnLogFunction,
   retryOptions?: OutboundRetryOptions,
   trafficTracker?: TrafficTracker | null,
+  budget?: SubrequestBudget,
 ): Promise<void> {
   let retryAttempted = false;
 
@@ -54,6 +56,7 @@ export async function handleTCPOutBound(
     port: number,
     mode: 'direct' | 'proxy-ip' | 'nat64',
   ): Promise<Socket> {
+    budget?.consume(1, `tcp connect ${mode} ${address}:${port}`);
     const hostname = formatSocketHostname(address);
     const tcpSocket: Socket = connect({
       hostname,
@@ -101,6 +104,9 @@ export async function handleTCPOutBound(
     try {
       tcpSocket = await connectAndWrite(target.address, portRemote, target.mode);
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       log.warn(`Retry connect failed (${target.mode}): ${String(error)}`);
       return false;
     }
@@ -133,6 +139,11 @@ export async function handleTCPOutBound(
       trafficTracker,
     );
   } catch (error) {
+    if (isSubrequestBudgetExceededError(error)) {
+      log.warn(`TCP budget exhausted: ${error.message}`);
+      safeCloseWebSocket(webSocket);
+      return;
+    }
     if (retryAttempted) {
       throw error;
     }

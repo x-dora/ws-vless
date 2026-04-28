@@ -6,6 +6,7 @@
  */
 
 import { cacheLogger } from '../utils/logger';
+import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
 import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 
 /**
@@ -14,9 +15,11 @@ import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
 export class KVStore implements CacheStore {
   readonly name = 'KV';
   private kv: KVNamespace;
+  private readonly budget?: SubrequestBudget;
 
-  constructor(kv: KVNamespace) {
+  constructor(kv: KVNamespace, budget?: SubrequestBudget) {
     this.kv = kv;
+    this.budget = budget;
   }
 
   isAvailable(): boolean {
@@ -24,7 +27,12 @@ export class KVStore implements CacheStore {
   }
 
   async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
+    if (!this.isAvailable()) {
+      return null;
+    }
+
     try {
+      this.budget?.consume(1, `KV.get ${provider}`);
       const data = await this.kv.get<UUIDCacheData>(`uuids:${provider}`, 'json');
       if (!data) {
         return null;
@@ -37,13 +45,21 @@ export class KVStore implements CacheStore {
 
       return data;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[KV] Get UUIDs error (${provider}):`, error);
       return null;
     }
   }
 
   async setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void> {
+    if (!this.isAvailable()) {
+      return;
+    }
+
     try {
+      this.budget?.consume(1, `KV.put ${provider}`);
       const now = Date.now();
       const data: UUIDCacheData = {
         uuids,
@@ -56,22 +72,38 @@ export class KVStore implements CacheStore {
         expirationTtl: ttlSeconds,
       });
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[KV] Set UUIDs error (${provider}):`, error);
     }
   }
 
   async deleteCachedUUIDs(provider: string): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
     try {
+      this.budget?.consume(1, `KV.delete ${provider}`);
       await this.kv.delete(`uuids:${provider}`);
       return true;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error(`[KV] Delete UUIDs error (${provider}):`, error);
       return false;
     }
   }
 
   async getMergedUUIDCache(): Promise<MergedUUIDCache | null> {
+    if (!this.isAvailable()) {
+      return null;
+    }
+
     try {
+      this.budget?.consume(1, 'KV.get merged');
       const data = await this.kv.get<MergedUUIDCache>('uuids:merged', 'json');
       if (!data) {
         return null;
@@ -83,13 +115,21 @@ export class KVStore implements CacheStore {
 
       return data;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[KV] Get merged cache error:', error);
       return null;
     }
   }
 
   async setMergedUUIDCache(uuidMap: Record<string, string>, ttlSeconds: number): Promise<void> {
+    if (!this.isAvailable()) {
+      return;
+    }
+
     try {
+      this.budget?.consume(1, 'KV.put merged');
       const now = Date.now();
       const data: MergedUUIDCache = {
         uuidMap,
@@ -101,15 +141,26 @@ export class KVStore implements CacheStore {
         expirationTtl: ttlSeconds,
       });
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[KV] Set merged cache error:', error);
     }
   }
 
   async deleteMergedUUIDCache(): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
     try {
+      this.budget?.consume(1, 'KV.delete merged');
       await this.kv.delete('uuids:merged');
       return true;
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        throw error;
+      }
       cacheLogger.error('[KV] Delete merged cache error:', error);
       return false;
     }

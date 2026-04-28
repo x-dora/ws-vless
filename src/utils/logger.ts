@@ -212,25 +212,25 @@ export function createConnLog(getPrefix: () => string) {
     /** 调试日志（仅开发环境） */
     debug: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.DEBUG) {
-        console.log(`[${getPrefix()}] ${info}`, event || '');
+        console.log(`[${getPrefix()}][D] ${info}`, event || '');
       }
     },
     /** 信息日志 */
     info: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.INFO) {
-        console.log(`[${getPrefix()}] ${info}`, event || '');
+        console.log(`[${getPrefix()}][I] ${info}`, event || '');
       }
     },
     /** 警告日志 */
     warn: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.WARN) {
-        console.warn(`[${getPrefix()}] ${info}`, event || '');
+        console.warn(`[${getPrefix()}][W] ${info}`, event || '');
       }
     },
     /** 错误日志 */
     error: (info: string, event?: string) => {
       if (globalLogLevel >= LogLevel.ERROR) {
-        console.error(`[${getPrefix()}] ${info}`, event || '');
+        console.error(`[${getPrefix()}][E] ${info}`, event || '');
       }
     },
   };

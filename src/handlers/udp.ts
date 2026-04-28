@@ -6,6 +6,12 @@
 import { DEFAULT_DNS_SERVER } from '../config';
 import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
+import { safeCloseWebSocket } from '../utils/_websocket';
+import {
+  fetchWithBudget,
+  isSubrequestBudgetExceededError,
+  type SubrequestBudget,
+} from '../utils/subrequest-budget';
 
 // ============================================================================
 // UDP/DNS 处理
@@ -31,6 +37,7 @@ export async function handleUDPOutBound(
   responseHeader: Uint8Array,
   log: ConnLogFunction,
   dnsServer: string = DEFAULT_DNS_SERVER,
+  budget?: SubrequestBudget,
 ): Promise<{ write: UDPWriteFunction }> {
   let isHeaderSent = false;
 
@@ -67,13 +74,18 @@ export async function handleUDPOutBound(
       new WritableStream({
         async write(chunk) {
           // 通过 DoH (DNS over HTTPS) 发送 DNS 查询
-          const response = await fetch(dnsServer, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/dns-message',
+          const response = await fetchWithBudget(
+            budget,
+            dnsServer,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/dns-message',
+              },
+              body: chunk,
             },
-            body: chunk,
-          });
+            'dns doh fetch',
+          );
 
           const dnsQueryResult = await response.arrayBuffer();
           const udpSize = dnsQueryResult.byteLength;
@@ -104,6 +116,11 @@ export async function handleUDPOutBound(
       }),
     )
     .catch((error) => {
+      if (isSubrequestBudgetExceededError(error)) {
+        log.warn(`DNS UDP budget exhausted: ${error.message}`);
+        safeCloseWebSocket(webSocket);
+        return;
+      }
       log.error(`DNS UDP error: ${error}`);
     });
 

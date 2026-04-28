@@ -5,6 +5,7 @@
 
 import type { UUIDProvider, UUIDProviderConfig } from '../types';
 import { providerLogger } from '../utils/logger';
+import { fetchWithBudget } from '../utils/subrequest-budget';
 
 // ============================================================================
 // 抽象基类
@@ -105,14 +106,19 @@ export abstract class BaseUUIDProvider implements UUIDProvider {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          ...this.config.headers,
-          ...options.headers,
+      const response = await fetchWithBudget(
+        this.config.budget,
+        url,
+        {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            ...this.config.headers,
+            ...options.headers,
+          },
         },
-      });
+        `${this.name} fetch`,
+      );
       return response;
     } finally {
       clearTimeout(timeoutId);

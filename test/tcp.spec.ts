@@ -7,6 +7,7 @@ import {
   WS_READY_STATE,
 } from '../src/types';
 import { ipv4ToNat64IPv6 } from '../src/utils/nat64';
+import { createSubrequestBudget } from '../src/utils/subrequest-budget';
 
 const { connectMock } = vi.hoisted(() => ({
   connectMock: vi.fn(),
@@ -197,5 +198,31 @@ describe('TCP outbound fallback', () => {
       hostname: '[2001:db8::5]',
       port: 8443,
     });
+  });
+
+  it('closes the upstream websocket when the retry budget is exhausted', async () => {
+    connectMock.mockReturnValueOnce(createEmptySocket());
+
+    const webSocket = createWebSocketStub();
+
+    await handleTCPOutBound(
+      { value: null },
+      'example.com',
+      AddressType.Domain,
+      443,
+      new Uint8Array([1, 2, 3]),
+      webSocket,
+      new Uint8Array([0, 0]),
+      createLog(),
+      { nat64Prefixes: ['2602:fc59:11:64::'] },
+      null,
+      createSubrequestBudget(1),
+    );
+
+    expect(connectMock).toHaveBeenCalledTimes(1);
+    expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+    expect(
+      (webSocket as unknown as { send: ReturnType<typeof vi.fn> }).send,
+    ).not.toHaveBeenCalled();
   });
 });

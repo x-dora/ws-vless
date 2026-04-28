@@ -4,6 +4,11 @@
  */
 
 import { createLogger } from '../utils/logger';
+import {
+  fetchWithBudget,
+  isSubrequestBudgetExceededError,
+  type SubrequestBudget,
+} from '../utils/subrequest-budget';
 
 const log = createLogger('StatsReporter');
 
@@ -41,6 +46,8 @@ export interface StatsReporterConfig {
   timeout?: number;
   /** 是否启用 */
   enabled?: boolean;
+  /** 统一出站预算 */
+  budget?: SubrequestBudget;
 }
 
 // ============================================================================
@@ -127,7 +134,7 @@ export class TrafficTracker {
  * @returns 上报函数，返回 Promise<boolean> 表示是否成功
  */
 export function createStatsReporter(config: StatsReporterConfig) {
-  const { endpoint, authToken, timeout = 5000, enabled = true } = config;
+  const { endpoint, authToken, timeout = 5000, enabled = true, budget } = config;
 
   if (!enabled || !endpoint) {
     log.debug('Stats reporter disabled');
@@ -145,10 +152,10 @@ export function createStatsReporter(config: StatsReporterConfig) {
       return true;
     }
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+    try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -157,19 +164,22 @@ export function createStatsReporter(config: StatsReporterConfig) {
         headers.Authorization = `Bearer ${authToken}`;
       }
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          // 直接使用 vlessUuid，Remnawave 就是用 vlessUuid 作为 Xray username
-          uuid: stats.uuid,
-          uplink: stats.uplink,
-          downlink: stats.downlink,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
+      const response = await fetchWithBudget(
+        budget,
+        endpoint,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            // 直接使用 vlessUuid，Remnawave 就是用 vlessUuid 作为 Xray username
+            uuid: stats.uuid,
+            uplink: stats.uplink,
+            downlink: stats.downlink,
+          }),
+          signal: controller.signal,
+        },
+        'stats report',
+      );
 
       if (response.ok) {
         log.debug(
@@ -181,12 +191,18 @@ export function createStatsReporter(config: StatsReporterConfig) {
         return false;
       }
     } catch (error) {
+      if (isSubrequestBudgetExceededError(error)) {
+        log.warn(`Stats report skipped: ${error.message}`);
+        return false;
+      }
       if (error instanceof Error && error.name === 'AbortError') {
         log.warn('Stats report timeout');
       } else {
         log.warn('Stats report error:', error);
       }
       return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
   };
 }
@@ -202,6 +218,7 @@ export async function batchReportStats(
   endpoint: string,
   stats: TrafficStats[],
   authToken?: string,
+  budget?: SubrequestBudget,
 ): Promise<boolean> {
   if (stats.length === 0) {
     return true;
@@ -224,20 +241,29 @@ export async function batchReportStats(
       headers.Authorization = `Bearer ${authToken}`;
     }
 
-    const response = await fetch(batchEndpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        reports: validStats.map((s) => ({
-          uuid: s.uuid,
-          uplink: s.uplink,
-          downlink: s.downlink,
-        })),
-      }),
-    });
+    const response = await fetchWithBudget(
+      budget,
+      batchEndpoint,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          reports: validStats.map((s) => ({
+            uuid: s.uuid,
+            uplink: s.uplink,
+            downlink: s.downlink,
+          })),
+        }),
+      },
+      'batch stats report',
+    );
 
     return response.ok;
   } catch (error) {
+    if (isSubrequestBudgetExceededError(error)) {
+      log.warn(`Batch stats report skipped: ${error.message}`);
+      return false;
+    }
     log.warn('Batch stats report error:', error);
     return false;
   }

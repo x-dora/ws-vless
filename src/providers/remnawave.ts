@@ -10,12 +10,10 @@
 import { CacheAPIStore, DEFAULT_CACHE_CONFIG } from '../cache';
 import type { UUIDProvider } from '../types';
 import { createLogger } from '../utils/logger';
+import { fetchWithBudget, type SubrequestBudget } from '../utils/subrequest-budget';
 import { isValidUUID } from '../utils/uuid';
 
 const log = createLogger('Remnawave');
-
-// 使用 Cache API 作为提供者级别的缓存
-const providerCache = new CacheAPIStore();
 
 // ============================================================================
 // Remnawave API 响应类型
@@ -81,6 +79,8 @@ export interface RemnawaveProviderConfig {
   cacheTTL?: number;
   /** 是否只获取启用的用户，默认 true */
   enabledOnly?: boolean;
+  /** 统一出站预算 */
+  budget?: SubrequestBudget;
 }
 
 // ============================================================================
@@ -97,11 +97,13 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
 
   private readonly config: RemnawaveProviderConfig;
   private readonly cacheTTL: number;
+  private readonly providerCache: CacheAPIStore;
 
   constructor(config: RemnawaveProviderConfig, priority = 20) {
     this.config = config;
     this.priority = priority;
     this.cacheTTL = config.cacheTTL ?? DEFAULT_CACHE_CONFIG.uuidCacheTTL;
+    this.providerCache = new CacheAPIStore(config.budget);
   }
 
   /**
@@ -110,7 +112,7 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
    */
   async fetchUUIDs(): Promise<string[]> {
     // 1. 尝试从缓存获取
-    const cached = await providerCache.getCachedUUIDs(this.name);
+    const cached = await this.providerCache.getCachedUUIDs(this.name);
     if (cached) {
       log.debug(`Cache hit: ${cached.uuids.length} UUIDs`);
       return cached.uuids;
@@ -122,7 +124,7 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
 
     // 3. 存入缓存
     if (uuids.length > 0) {
-      await providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
+      await this.providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
     }
 
     return uuids;
@@ -144,15 +146,20 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
     try {
       // 获取足够多的用户，避免分页问题
       url.searchParams.set('size', '1000');
-      const response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
+      const response = await fetchWithBudget(
+        this.config.budget,
+        url.toString(),
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
         },
-        signal: controller.signal,
-      });
+        'remnawave api fetch',
+      );
 
       if (!response.ok) {
         throw new Error(`API returned ${response.status}: ${response.statusText}`);
@@ -256,11 +263,11 @@ export class RemnawaveUUIDProvider implements UUIDProvider {
   async refresh(): Promise<string[]> {
     log.debug('Force refreshing...');
     // 先删除旧缓存
-    await providerCache.deleteCachedUUIDs(this.name);
+    await this.providerCache.deleteCachedUUIDs(this.name);
     // 重新获取
     const uuids = await this.fetchFromApi();
     if (uuids.length > 0) {
-      await providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
+      await this.providerCache.setCachedUUIDs(this.name, uuids, this.cacheTTL);
     }
     return uuids;
   }
@@ -284,6 +291,7 @@ export function createRemnawaveProvider(
     priority?: number;
     cacheTTL?: number;
     timeout?: number;
+    budget?: SubrequestBudget;
   },
 ): RemnawaveUUIDProvider | null {
   // 如果地址或密钥为空，不创建提供者

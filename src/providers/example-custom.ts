@@ -6,6 +6,7 @@
  */
 
 import type { UUIDProviderConfig } from '../types';
+import type { SubrequestBudget } from '../utils/subrequest-budget';
 import { BaseUUIDProvider } from './base';
 
 // ============================================================================
@@ -143,13 +144,13 @@ export class GistUUIDProvider extends BaseUUIDProvider {
   public readonly name = 'github-gist';
   private readonly gistRawUrl: string;
 
-  constructor(gistRawUrl: string, priority = 40) {
-    super({ enabled: true }, priority);
+  constructor(gistRawUrl: string, priority = 40, budget?: SubrequestBudget) {
+    super({ enabled: true, budget }, priority);
     this.gistRawUrl = gistRawUrl;
   }
 
   protected async doFetchUUIDs(): Promise<string[]> {
-    const response = await fetch(this.gistRawUrl);
+    const response = await this.fetchWithTimeout(this.gistRawUrl);
 
     if (!response.ok) {
       throw new Error(`GitHub Gist returned ${response.status}`);

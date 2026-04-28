@@ -30,6 +30,12 @@ import {
 } from './providers';
 import type { WorkerEnv } from './types';
 import { createLogger, initLogger } from './utils/logger';
+import {
+  createBudgetedFetcher,
+  createSubrequestBudget,
+  isSubrequestBudgetExceededError,
+  type SubrequestBudget,
+} from './utils/subrequest-budget';
 import { isValidUUID } from './utils/uuid';
 
 const log = createLogger('Init');
@@ -99,16 +105,16 @@ export default {
    * @returns HTTP 响应
    */
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
-    try {
-      // 获取运行时配置
-      const config = getConfig(env);
+    const config = getConfig(env);
+    const requestBudget = createSubrequestBudget(config.subrequestLimit);
 
+    try {
       // 获取缓存 TTL
       const cacheTTL = env.UUID_CACHE_TTL ? parseInt(env.UUID_CACHE_TTL as string, 10) : undefined;
 
       // 每次请求初始化 UUID 管理器
       // Worker 是无状态的，使用 Cache API 进行持久化
-      const uuidManager = initializeUUIDManager(config.userID, env, cacheTTL);
+      const uuidManager = initializeUUIDManager(config.userID, env, cacheTTL, requestBudget);
 
       // 获取所有有效的 UUID 列表（优先从 Cache API 获取）
       const validUUIDs = await uuidManager.getAllUUIDs();
@@ -144,6 +150,8 @@ export default {
           nat64Prefixes: retryOverrides.nat64Prefixes,
           nat64ResolverURL: config.nat64ResolverURL,
           dnsServer: config.dnsServer,
+          budget: requestBudget,
+          nat64Fetcher: createBudgetedFetcher(requestBudget, 'nat64 resolver fetch'),
           muxEnabled,
           statsReporter,
           waitUntil: ctx.waitUntil.bind(ctx),
@@ -154,6 +162,10 @@ export default {
       return await handleHttpRequest(request, validUUIDs, uuidManager, env);
     } catch (err) {
       const error = err as Error;
+      if (isSubrequestBudgetExceededError(error)) {
+        log.warn('Subrequest budget exceeded:', error.message);
+        return new Response('Service Unavailable', { status: 503 });
+      }
       log.error('Worker error:', error);
       return new Response(`Error: ${error.message}`, { status: 500 });
     }
@@ -310,6 +322,7 @@ function initializeUUIDManager(
   defaultUUID: string,
   env: WorkerEnv,
   cacheTTL?: number,
+  budget?: SubrequestBudget,
 ): UUIDProviderManager {
   const devMode = isDevMode(env);
 
@@ -326,6 +339,7 @@ function initializeUUIDManager(
     cacheTTL,
     kv: env.UUID_KV, // 如果配置了 KV，作为 L2
     d1: env.UUID_D1, // 如果没有 KV 但有 D1，作为 L2
+    budget,
   });
 
   log.info(devMode ? 'Dev mode' : 'Prod mode', `Cache: ${manager.getCacheType()}`);
@@ -334,7 +348,10 @@ function initializeUUIDManager(
   // Remnawave API 提供者
   // 如果配置了 RW_API_URL 和 RW_API_KEY，自动注册
   // =========================================================================
-  const remnawaveProvider = createRemnawaveProvider(env.RW_API_URL, env.RW_API_KEY, { cacheTTL });
+  const remnawaveProvider = createRemnawaveProvider(env.RW_API_URL, env.RW_API_KEY, {
+    cacheTTL,
+    budget,
+  });
   if (remnawaveProvider) {
     manager.register(remnawaveProvider);
     log.debug('Remnawave provider registered');

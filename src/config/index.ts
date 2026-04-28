@@ -50,6 +50,11 @@ export const DEFAULT_PORT = 443;
  */
 export const DEFAULT_MUX_TIMEOUT = 300;
 
+/**
+ * 默认统一出站预算
+ */
+export const DEFAULT_SUBREQUEST_LIMIT = 48;
+
 // ============================================================================
 // 配置管理类
 // ============================================================================
@@ -80,6 +85,9 @@ export class RuntimeConfig {
   /** Mux 超时时间（秒） */
   public readonly muxTimeout: number;
 
+  /** 统一出站预算上限 */
+  public readonly subrequestLimit: number;
+
   constructor(env: WorkerEnv) {
     this.userID = env.UUID || DEFAULT_UUID;
     this.proxyIP = env.PROXY_IP || DEFAULT_PROXY_IP;
@@ -88,6 +96,10 @@ export class RuntimeConfig {
     this.nat64ResolverURL = env.NAT64_RESOLVER_URL || DEFAULT_NAT64_RESOLVER_URL;
     this.muxEnabled = env.MUX_ENABLED !== 'false';
     this.muxTimeout = env.MUX_TIMEOUT ? parseInt(env.MUX_TIMEOUT, 10) : DEFAULT_MUX_TIMEOUT;
+    this.subrequestLimit = parsePositiveInteger(
+      env.SUBREQUEST_LIMIT ?? env.MAX_SUBREQUESTS,
+      DEFAULT_SUBREQUEST_LIMIT,
+    );
   }
 
   /**
@@ -116,4 +128,17 @@ export function getConfig(env: WorkerEnv): RuntimeConfig {
   cachedConfig = new RuntimeConfig(env);
   cachedConfig.validate();
   return cachedConfig;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
 }

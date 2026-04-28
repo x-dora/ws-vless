@@ -10,6 +10,7 @@
 import { type CacheStore, createCacheStore, DEFAULT_CACHE_CONFIG } from '../cache';
 import type { UUIDProvider, UUIDValidationResult } from '../types';
 import { createLogger } from '../utils/logger';
+import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
 import { isValidUUID } from '../utils/uuid';
 import { BaseUUIDProvider, HttpApiUUIDProvider, StaticUUIDProvider } from './base';
 
@@ -34,6 +35,8 @@ export interface UUIDManagerOptions {
   kv?: KVNamespace;
   /** D1 数据库（可选，作为二级缓存，KV 优先） */
   d1?: D1Database;
+  /** 统一出站预算（可选） */
+  budget?: SubrequestBudget;
 }
 
 // ============================================================================
@@ -59,6 +62,7 @@ export class UUIDProviderManager {
     this.cacheStore = createCacheStore({
       kv: options.kv,
       d1: options.d1,
+      budget: options.budget,
     });
   }
 
@@ -124,30 +128,22 @@ export class UUIDProviderManager {
   private async fetchFromProviders(): Promise<Record<string, string>> {
     const uuidMap: Record<string, string> = {};
 
-    // 并行获取所有提供者的 UUID
-    const results = await Promise.allSettled(
-      this.providers.map(async (provider) => {
-        try {
-          const uuids = await provider.fetchUUIDs();
-          return { provider: provider.name, uuids };
-        } catch (error) {
-          log.error(`${provider.name} fetch failed:`, error);
-          return { provider: provider.name, uuids: [] };
-        }
-      }),
-    );
-
-    // 合并结果（按优先级顺序，先注册的优先）
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const { provider, uuids } = result.value;
+    // 顺序获取，避免并发消费预算导致的不可预测超限
+    for (const provider of this.providers) {
+      try {
+        const uuids = await provider.fetchUUIDs();
         for (const uuid of uuids) {
           const normalizedUUID = uuid.toLowerCase();
           // 只添加不存在的 UUID（保持高优先级提供者的归属）
           if (!uuidMap[normalizedUUID]) {
-            uuidMap[normalizedUUID] = provider;
+            uuidMap[normalizedUUID] = provider.name;
           }
         }
+      } catch (error) {
+        if (isSubrequestBudgetExceededError(error)) {
+          throw error;
+        }
+        log.error(`${provider.name} fetch failed:`, error);
       }
     }
 
@@ -228,27 +224,34 @@ export class UUIDProviderManager {
     const cacheStatus = cached ? 'hit' : 'miss';
     const totalUUIDs = cached ? Object.keys(cached.uuidMap).length : 0;
 
-    const providerDetails = await Promise.all(
-      this.providers.map(async (p) => {
-        try {
-          const available = await p.isAvailable();
-          const uuids = available ? await p.fetchUUIDs() : [];
-          return {
-            name: p.name,
-            priority: p.priority,
-            available,
-            uuidCount: uuids.length,
-          };
-        } catch {
-          return {
-            name: p.name,
-            priority: p.priority,
-            available: false,
-            uuidCount: 0,
-          };
+    const providerDetails: {
+      name: string;
+      priority: number;
+      available: boolean;
+      uuidCount: number;
+    }[] = [];
+
+    for (const provider of this.providers) {
+      try {
+        const uuids = await provider.fetchUUIDs();
+        providerDetails.push({
+          name: provider.name,
+          priority: provider.priority,
+          available: uuids.length > 0,
+          uuidCount: uuids.length,
+        });
+      } catch (error) {
+        if (isSubrequestBudgetExceededError(error)) {
+          throw error;
         }
-      }),
-    );
+        providerDetails.push({
+          name: provider.name,
+          priority: provider.priority,
+          available: false,
+          uuidCount: 0,
+        });
+      }
+    }
 
     return {
       totalProviders: this.providers.length,
