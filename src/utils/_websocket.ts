@@ -46,7 +46,7 @@ export function isWebSocketOpen(socket: WebSocket): boolean {
  * @returns ReadableStream 可读流
  */
 export function makeReadableWebSocketStream(
-  webSocketServer: any,
+  webSocketServer: WebSocket,
   earlyDataHeader: string,
   log: ConnLogFunction,
 ): ReadableStream<ArrayBuffer> {

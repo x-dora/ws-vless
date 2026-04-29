@@ -161,17 +161,25 @@ export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator):
     return addressResult;
   }
 
+  const { addressValue, addressType, endIndex } = addressResult;
+  if (!addressValue || addressType === undefined || endIndex === undefined) {
+    return {
+      hasError: true,
+      message: 'Invalid address parse result',
+    };
+  }
+
   // 检测是否为 Mux.Cool 连接（通过地址判断，例如目标是 v1.mux.cool）
-  if (isMuxConnection(addressResult.addressValue!)) {
+  if (isMuxConnection(addressValue)) {
     isMux = true;
   }
 
   return {
     hasError: false,
-    addressRemote: addressResult.addressValue,
-    addressType: addressResult.addressType,
+    addressRemote: addressValue,
+    addressType,
     portRemote,
-    rawDataIndex: addressResult.endIndex,
+    rawDataIndex: endIndex,
     protocolVersion: version,
     isUDP,
     isMux,

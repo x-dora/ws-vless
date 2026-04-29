@@ -185,6 +185,7 @@ export function isMuxConnection(address: string): boolean {
  *
  * 优化：使用 subarray 而非 slice，避免数据拷贝，降低 CPU 开销
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: frame parsing keeps protocol branches explicit for correctness and hot-path performance
 export function parseMuxFrame(
   bytes: Uint8Array,
   offset: number = 0,
@@ -407,11 +408,11 @@ export function buildMuxFrame(
   }
 
   // 写入数据
-  if (dataLen > 0) {
+  if (data && dataLen > 0) {
     const dataOffset = 2 + metadataLength;
     frame[dataOffset] = (dataLen >> 8) & 0xff;
     frame[dataOffset + 1] = dataLen & 0xff;
-    frame.set(data!, dataOffset + 2);
+    frame.set(data, dataOffset + 2);
   }
 
   return frame;
@@ -456,7 +457,9 @@ export function buildMuxKeepFrame(id: number, data?: Uint8Array): Uint8Array {
   frame[5] = MuxOption.Data;
   frame[6] = (dataLen >> 8) & 0xff;
   frame[7] = dataLen & 0xff;
-  frame.set(data!, 8);
+  if (data) {
+    frame.set(data, 8);
+  }
   return frame;
 }
 

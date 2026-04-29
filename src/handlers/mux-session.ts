@@ -299,6 +299,7 @@ export class MuxSession {
    * 2. 只在必要时（有未完整帧）才进行缓冲区合并
    * 3. 使用 parseMuxFrame 的 offset 参数避免 slice
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: streaming parser needs explicit partial-frame and recovery branches
   async processData(data: ArrayBuffer): Promise<void> {
     if (this.closed) {
       return;
@@ -381,7 +382,11 @@ export class MuxSession {
 
     switch (status) {
       case MuxStatus.New:
-        this.handleNewConnection(id, newConnection!, data);
+        if (!newConnection) {
+          this.log.warn(`Mux New frame missing connection metadata: id=${id}`);
+          break;
+        }
+        this.handleNewConnection(id, newConnection, data);
         break;
 
       case MuxStatus.Keep:
@@ -466,102 +471,14 @@ export class MuxSession {
     }
 
     try {
-      let retryAttempted = false;
-
-      const connectAndPipe = async (
-        address: string,
-        allowRetry: boolean,
-        reason: string,
-      ): Promise<void> => {
-        this.budget.consume(1, `mux tcp connect ${address}:${subConn.port}`);
-        const hostname = formatSocketHostname(address);
-        const tcpSocket: Socket = connect({
-          hostname,
-          port: subConn.port,
-        });
-
-        subConn.socket = tcpSocket;
-
-        // 等待连接（带超时）
-        try {
-          await Promise.race([tcpSocket.opened, createTimeoutPromise(CONNECT_TIMEOUT_MS)]);
-        } catch (error) {
-          this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
-          try {
-            tcpSocket.close();
-          } catch {}
-
-          if (allowRetry) {
-            const target = await resolveRetryTarget(
-              subConn.address,
-              subConn.addressType,
-              this.retryOptions ?? {},
-            );
-            if (!target) {
-              throw error;
-            }
-
-            retryAttempted = true;
-            this.log.debug(
-              `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
-            );
-            await connectAndPipe(target.address, false, 'retry');
-            return;
-          }
-
-          throw error;
-        }
-
-        if (this.closed || subConn.closed) {
-          try {
-            tcpSocket.close();
-          } catch {}
-          return;
-        }
-
-        subConn.writer = tcpSocket.writable.getWriter();
-        subConn.ready = true;
-
-        // 写入初始数据（分块）
-        if (initialData && initialData.length > 0 && !subConn.closed) {
-          await this.writeToSocket(subConn, initialData);
-        }
-
-        // 发送待处理数据
-        while (subConn.pendingData.length > 0 && !subConn.closed) {
-          const pendingChunk = subConn.pendingData.shift()!;
-          await this.writeToSocket(subConn, pendingChunk);
-        }
-
-        const retry = allowRetry
-          ? async (): Promise<boolean> => {
-              if (retryAttempted) {
-                return false;
-              }
-
-              const target = await resolveRetryTarget(
-                subConn.address,
-                subConn.addressType,
-                this.retryOptions ?? {},
-              );
-              if (!target) {
-                return false;
-              }
-
-              retryAttempted = true;
-              this.log.debug(
-                `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
-              );
-              await connectAndPipe(target.address, false, 'retry');
-              return true;
-            }
-          : null;
-
-        // 管道远程数据到 WebSocket
-        await this.pipeRemoteToWebSocket(subConn.id, tcpSocket, retry);
-      };
-
-      await connectAndPipe(subConn.address, true, 'initial connect failure');
+      await this.connectAndPipeTCP(
+        subConn,
+        subConn.address,
+        true,
+        'initial connect failure',
+        { attempted: false },
+        initialData,
+      );
     } catch (error) {
       if (isSubrequestBudgetExceededError(error)) {
         this.stats.limitReached = true;
@@ -576,6 +493,116 @@ export class MuxSession {
       subConn.closed = true;
       this.removeConnection(subConn.id);
     }
+  }
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: connection/retry/pipeline lifecycle requires explicit error branches and state transitions
+  private async connectAndPipeTCP(
+    subConn: SubConnection,
+    address: string,
+    allowRetry: boolean,
+    reason: string,
+    retryState: { attempted: boolean },
+    initialData?: Uint8Array,
+  ): Promise<void> {
+    this.budget.consume(1, `mux tcp connect ${address}:${subConn.port}`);
+    const hostname = formatSocketHostname(address);
+    const tcpSocket: Socket = connect({
+      hostname,
+      port: subConn.port,
+    });
+
+    subConn.socket = tcpSocket;
+
+    try {
+      await Promise.race([tcpSocket.opened, createTimeoutPromise(CONNECT_TIMEOUT_MS)]);
+    } catch (error) {
+      this.log.warn(`TCP connect error id=${subConn.id}: ${error}`);
+      try {
+        tcpSocket.close();
+      } catch {}
+
+      if (allowRetry) {
+        const target = await resolveRetryTarget(
+          subConn.address,
+          subConn.addressType,
+          this.retryOptions ?? {},
+        );
+        if (!target) {
+          throw error;
+        }
+
+        retryState.attempted = true;
+        this.log.debug(
+          `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
+        );
+        await this.connectAndPipeTCP(
+          subConn,
+          target.address,
+          false,
+          'retry',
+          retryState,
+          initialData,
+        );
+        return;
+      }
+
+      throw error;
+    }
+
+    if (this.closed || subConn.closed) {
+      try {
+        tcpSocket.close();
+      } catch {}
+      return;
+    }
+
+    subConn.writer = tcpSocket.writable.getWriter();
+    subConn.ready = true;
+
+    if (initialData && initialData.length > 0 && !subConn.closed) {
+      await this.writeToSocket(subConn, initialData);
+    }
+
+    while (subConn.pendingData.length > 0 && !subConn.closed) {
+      const pendingChunk = subConn.pendingData.shift();
+      if (!pendingChunk) {
+        break;
+      }
+      await this.writeToSocket(subConn, pendingChunk);
+    }
+
+    const retry = allowRetry
+      ? async (): Promise<boolean> => {
+          if (retryState.attempted) {
+            return false;
+          }
+
+          const target = await resolveRetryTarget(
+            subConn.address,
+            subConn.addressType,
+            this.retryOptions ?? {},
+          );
+          if (!target) {
+            return false;
+          }
+
+          retryState.attempted = true;
+          this.log.debug(
+            `Mux retry via ${target.mode} ${formatSocketHostname(target.address)}:${subConn.port} (${reason})`,
+          );
+          await this.connectAndPipeTCP(
+            subConn,
+            target.address,
+            false,
+            'retry',
+            retryState,
+            initialData,
+          );
+          return true;
+        }
+      : null;
+
+    await this.pipeRemoteToWebSocket(subConn.id, tcpSocket, retry);
   }
 
   /**
@@ -678,6 +705,7 @@ export class MuxSession {
   // Keep 连接处理（参考 Xray 的 handleStatusKeep）
   // ==========================================================================
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: keep handler intentionally covers all sub-connection state transitions in one place
   private async handleKeepConnection(
     id: number,
     data?: Uint8Array,

@@ -3,20 +3,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_UUID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-const { handleTunnelOverWSMock } = vi.hoisted(() => ({
-  handleTunnelOverWSMock: vi.fn(),
+const { resolveRetryOverridesMock } = vi.hoisted(() => ({
+  resolveRetryOverridesMock: vi.fn((searchParams: URLSearchParams) => ({
+    proxyIP: searchParams.get('PROXY_IP') ?? '',
+    nat64Prefixes: ['64:ff9b::', '2001:db8:64::'],
+  })),
 }));
 
-vi.mock('../src/handlers/connection', () => ({
-  handleTunnelOverWS: handleTunnelOverWSMock,
+vi.mock('../src/config/request-overrides', () => ({
+  resolveRetryOverrides: resolveRetryOverridesMock,
 }));
 
 import worker from '../src/index';
 
 describe('worker websocket retry overrides', () => {
   beforeEach(() => {
-    handleTunnelOverWSMock.mockReset();
-    handleTunnelOverWSMock.mockResolvedValue(new Response('ok', { status: 200 }));
+    resolveRetryOverridesMock.mockClear();
   });
 
   afterEach(() => {
@@ -46,14 +48,16 @@ describe('worker websocket retry overrides', () => {
 
     await waitOnExecutionContext(ctx);
 
-    expect(response.status).toBe(200);
-    expect(handleTunnelOverWSMock).toHaveBeenCalledOnce();
+    expect(response.status).toBe(101);
+    expect(resolveRetryOverridesMock).toHaveBeenCalledOnce();
 
-    const options = handleTunnelOverWSMock.mock.calls[0]?.[1] as {
-      proxyIP?: string;
-      nat64Prefixes?: string[];
-    };
-    expect(options.proxyIP).toBe('198.51.100.8');
-    expect(options.nat64Prefixes).toEqual(['64:ff9b::', '2001:db8:64::']);
+    const [searchParams, base] = resolveRetryOverridesMock.mock.calls[0] as unknown as [
+      URLSearchParams,
+      { proxyIP?: string; nat64Prefixes?: readonly string[] },
+    ];
+    expect(searchParams.get('PROXY_IP')).toBe('198.51.100.8');
+    expect(searchParams.get('NAT64_PREFIXES')).toBe('64:ff9b::,2001:db8:64::');
+    expect(base.proxyIP).toBe('');
+    expect(base.nat64Prefixes).toEqual(['2602:fc59:11:64::']);
   });
 });

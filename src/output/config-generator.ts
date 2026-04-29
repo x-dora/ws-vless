@@ -161,6 +161,7 @@ ${header}
    * 简单的对象转 YAML 格式
    * 仅支持基本类型，用于 Clash 配置
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: serializer keeps primitive handling explicit to preserve deterministic output
   private toYaml(obj: Record<string, unknown>, indent = 0): string {
     const lines: string[] = [];
     const prefix = '  '.repeat(indent);

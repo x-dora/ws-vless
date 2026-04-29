@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheAPIStore } from '../src/cache';
 import { DEFAULT_SUBREQUEST_LIMIT, getConfig } from '../src/config';
 import { UUIDProviderManager } from '../src/providers';
-import { createStatsReporter } from '../src/services/stats-reporter';
+import { TrafficStatsService } from '../src/services/stats-reporter';
 import type { UUIDProvider, WorkerEnv } from '../src/types';
 import {
   createSubrequestBudget,
@@ -150,24 +150,30 @@ describe('subrequest budget', () => {
       },
     });
 
-    const report = createStatsReporter({
+    const service = new TrafficStatsService({
       endpoint: 'https://stats.example.test/worker/report',
-      budget: createSubrequestBudget(1),
     });
+    const budget = createSubrequestBudget(1);
 
     await expect(
-      report({
-        uuid: TEST_UUID,
-        uplink: 128,
-        downlink: 256,
-      }),
+      service.report(
+        {
+          uuid: TEST_UUID,
+          uplink: 128,
+          downlink: 256,
+        },
+        budget,
+      ),
     ).resolves.toBe(true);
     await expect(
-      report({
-        uuid: TEST_UUID,
-        uplink: 128,
-        downlink: 256,
-      }),
+      service.report(
+        {
+          uuid: TEST_UUID,
+          uplink: 128,
+          downlink: 256,
+        },
+        budget,
+      ),
     ).resolves.toBe(false);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

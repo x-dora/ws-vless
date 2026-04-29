@@ -57,7 +57,7 @@ export function normalizeNat64Prefix(prefix: string): string | null {
   const normalized = sanitizeHostLiteral(prefix)
     .toLowerCase()
     .replace(/\/\d+$/, '');
-  if (!normalized || !normalized.includes(':')) {
+  if (!normalized?.includes(':')) {
     return null;
   }
 

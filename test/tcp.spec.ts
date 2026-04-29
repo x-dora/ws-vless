@@ -1,13 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleTCPOutBound } from '../src/handlers/tcp';
-import {
-  AddressType,
-  type ConnLogFunction,
-  type RemoteSocketWrapper,
-  WS_READY_STATE,
-} from '../src/types';
+import { TcpTransport } from '../src/handlers/tcp';
+import { AddressType, type ConnLogFunction, WS_READY_STATE } from '../src/types';
 import { ipv4ToNat64IPv6 } from '../src/utils/nat64';
-import { createSubrequestBudget } from '../src/utils/subrequest-budget';
+import { createBudgetedFetcher, createSubrequestBudget } from '../src/utils/subrequest-budget';
 
 const { connectMock } = vi.hoisted(() => ({
   connectMock: vi.fn(),
@@ -100,20 +95,18 @@ describe('TCP outbound fallback', () => {
     connectMock.mockReturnValueOnce(createEmptySocket()).mockReturnValueOnce(createEmptySocket());
 
     const webSocket = createWebSocketStub();
-    const remoteSocket: RemoteSocketWrapper = { value: null };
-
-    await handleTCPOutBound(
-      remoteSocket,
-      'example.com',
-      AddressType.Domain,
-      443,
-      new Uint8Array([1, 2, 3]),
+    const transport = new TcpTransport({
+      addressRemote: 'example.com',
+      addressType: AddressType.Domain,
+      portRemote: 443,
+      initialData: new Uint8Array([1, 2, 3]),
       webSocket,
-      new Uint8Array([0, 0]),
-      createLog(),
-      { proxyIP: '203.0.113.8' },
-      null,
-    );
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: { proxyIP: '203.0.113.8' },
+    });
+
+    await transport.connect();
 
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(connectMock.mock.calls[1][0]).toMatchObject({
@@ -129,18 +122,18 @@ describe('TCP outbound fallback', () => {
     const webSocket = createWebSocketStub();
     const expected = ipv4ToNat64IPv6('203.0.113.10', '2602:fc59:11:64::');
 
-    await handleTCPOutBound(
-      { value: null },
-      '203.0.113.10',
-      AddressType.IPv4,
-      8443,
-      new Uint8Array([9, 9, 9]),
+    const transport = new TcpTransport({
+      addressRemote: '203.0.113.10',
+      addressType: AddressType.IPv4,
+      portRemote: 8443,
+      initialData: new Uint8Array([9, 9, 9]),
       webSocket,
-      new Uint8Array([0, 0]),
-      createLog(),
-      { nat64Prefixes: ['2602:fc59:11:64::'] },
-      null,
-    );
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: { nat64Prefixes: ['2602:fc59:11:64::'] },
+    });
+
+    await transport.connect();
 
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(connectMock.mock.calls[1][0]).toMatchObject({
@@ -154,18 +147,18 @@ describe('TCP outbound fallback', () => {
 
     const webSocket = createWebSocketStub();
 
-    await handleTCPOutBound(
-      { value: null },
-      '2001:db8::10',
-      AddressType.IPv6,
-      443,
-      new Uint8Array([7, 7, 7]),
+    const transport = new TcpTransport({
+      addressRemote: '2001:db8::10',
+      addressType: AddressType.IPv6,
+      portRemote: 443,
+      initialData: new Uint8Array([7, 7, 7]),
       webSocket,
-      new Uint8Array([0, 0]),
-      createLog(),
-      { nat64Prefixes: ['2602:fc59:11:64::'] },
-      null,
-    );
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: { nat64Prefixes: ['2602:fc59:11:64::'] },
+    });
+
+    await transport.connect();
 
     expect(connectMock).toHaveBeenCalledTimes(1);
     expect(connectMock.mock.calls[0][0]).toMatchObject({
@@ -180,18 +173,18 @@ describe('TCP outbound fallback', () => {
 
     const webSocket = createWebSocketStub();
 
-    await handleTCPOutBound(
-      { value: null },
-      '203.0.113.10',
-      AddressType.IPv4,
-      8443,
-      new Uint8Array([9, 9, 9]),
+    const transport = new TcpTransport({
+      addressRemote: '203.0.113.10',
+      addressType: AddressType.IPv4,
+      portRemote: 8443,
+      initialData: new Uint8Array([9, 9, 9]),
       webSocket,
-      new Uint8Array([0, 0]),
-      createLog(),
-      { proxyIP: '2001:db8::5' },
-      null,
-    );
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: { proxyIP: '2001:db8::5' },
+    });
+
+    await transport.connect();
 
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(connectMock.mock.calls[1][0]).toMatchObject({
@@ -204,20 +197,24 @@ describe('TCP outbound fallback', () => {
     connectMock.mockReturnValueOnce(createEmptySocket());
 
     const webSocket = createWebSocketStub();
+    const budget = createSubrequestBudget(1);
 
-    await handleTCPOutBound(
-      { value: null },
-      'example.com',
-      AddressType.Domain,
-      443,
-      new Uint8Array([1, 2, 3]),
+    const transport = new TcpTransport({
+      addressRemote: 'example.com',
+      addressType: AddressType.Domain,
+      portRemote: 443,
+      initialData: new Uint8Array([1, 2, 3]),
       webSocket,
-      new Uint8Array([0, 0]),
-      createLog(),
-      { nat64Prefixes: ['2602:fc59:11:64::'] },
-      null,
-      createSubrequestBudget(1),
-    );
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+      retryOptions: {
+        nat64Prefixes: ['2602:fc59:11:64::'],
+        fetcher: createBudgetedFetcher(budget, 'nat64 resolver fetch'),
+      },
+      budget,
+    });
+
+    await transport.connect();
 
     expect(connectMock).toHaveBeenCalledTimes(1);
     expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
