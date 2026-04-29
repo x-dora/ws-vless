@@ -24,6 +24,7 @@ export class AppContext {
   readonly authService: AuthService;
   readonly requestMetrics = new RequestMetricsService();
   readonly trafficStatsService: TrafficStatsService;
+  private readonly uuidManager: UUIDProviderManager;
 
   constructor(private readonly env: WorkerEnv) {
     this.config = getConfig(env);
@@ -37,12 +38,16 @@ export class AppContext {
       enabled: Boolean(env.STATS_REPORT_URL),
     });
 
-    const previewManager = this.createUUIDManager();
-    log.info(devMode ? 'dev mode' : 'prod mode', `cache=${previewManager.getCacheType()}`);
+    this.uuidManager = this.createUUIDManager();
+    log.info(devMode ? 'dev mode' : 'prod mode', `cache=${this.uuidManager.getCacheType()}`);
   }
 
   createRequestBudget(): SubrequestBudget {
     return createSubrequestBudget(this.config.subrequestLimit);
+  }
+
+  getUUIDManager(): UUIDProviderManager {
+    return this.uuidManager;
   }
 
   createUUIDManager(budget?: SubrequestBudget): UUIDProviderManager {

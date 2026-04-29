@@ -12,7 +12,7 @@ import { isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
 import { AppContext } from './app-context';
 import type { RequestScope } from './types';
 
-const appCache = new Map<string, WorkerApp>();
+const appCache = new WeakMap<WorkerEnv, WorkerApp>();
 
 export class WorkerApp {
   private readonly httpRouter: HttpRouter;
@@ -53,7 +53,7 @@ export class WorkerApp {
         return response;
       }
 
-      const uuidManager = this.context.createUUIDManager(scope.budget);
+      const uuidManager = this.context.getUUIDManager();
       return await this.httpRouter.handle(request, uuidManager);
     } catch (error) {
       if (isSubrequestBudgetExceededError(error)) {
@@ -70,38 +70,12 @@ export class WorkerApp {
 }
 
 export function getWorkerApp(env: WorkerEnv): WorkerApp {
-  const key = buildAppKey(env);
-  const cached = appCache.get(key);
+  const cached = appCache.get(env);
   if (cached) {
     return cached;
   }
 
   const app = new WorkerApp(new AppContext(env));
-  appCache.set(key, app);
+  appCache.set(env, app);
   return app;
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: env key builder intentionally lists all toggles for stable cache invalidation
-function buildAppKey(env: WorkerEnv): string {
-  return JSON.stringify({
-    UUID: env.UUID ?? '',
-    PROXY_IP: env.PROXY_IP ?? '',
-    DNS_SERVER: env.DNS_SERVER ?? '',
-    NAT64_PREFIXES: env.NAT64_PREFIXES ?? '',
-    NAT64_RESOLVER_URL: env.NAT64_RESOLVER_URL ?? '',
-    API_KEY: env.API_KEY ?? '',
-    DEV_MODE: env.DEV_MODE ?? '',
-    RW_API_URL: env.RW_API_URL ?? '',
-    RW_API_KEY: env.RW_API_KEY ?? '',
-    UUID_CACHE_TTL: env.UUID_CACHE_TTL ?? '',
-    MUX_ENABLED: env.MUX_ENABLED ?? '',
-    MUX_TIMEOUT: env.MUX_TIMEOUT ?? '',
-    SUBREQUEST_LIMIT: env.SUBREQUEST_LIMIT ?? '',
-    MAX_SUBREQUESTS: env.MAX_SUBREQUESTS ?? '',
-    LOG_LEVEL: env.LOG_LEVEL ?? '',
-    STATS_REPORT_URL: env.STATS_REPORT_URL ?? '',
-    STATS_REPORT_TOKEN: env.STATS_REPORT_TOKEN ?? '',
-    hasKV: Boolean(env.UUID_KV),
-    hasD1: Boolean(env.UUID_D1),
-  });
 }
