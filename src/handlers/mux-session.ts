@@ -300,15 +300,15 @@ export class MuxSession {
    * 3. 使用 parseMuxFrame 的 offset 参数避免 slice
    */
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: streaming parser needs explicit partial-frame and recovery branches
-  async processData(data: ArrayBuffer): Promise<void> {
+  async processData(data: ArrayBuffer | ArrayBufferLike | Uint8Array): Promise<void> {
     if (this.closed) {
       return;
     }
 
-    this.stats.bytesReceived += data.byteLength;
-    this.stats.lastActivityTime = Date.now();
+    const incoming = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-    const incoming = new Uint8Array(data);
+    this.stats.bytesReceived += incoming.byteLength;
+    this.stats.lastActivityTime = Date.now();
 
     // 优化：如果没有缓冲数据，直接在 incoming 上解析
     let bytes: Uint8Array;

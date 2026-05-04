@@ -24,7 +24,6 @@ export interface UdpDnsTransportOptions {
 
 export class UdpDnsTransport {
   private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
-  private isHeaderSent = false;
 
   constructor(private readonly options: UdpDnsTransportOptions) {
     const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -66,18 +65,11 @@ export class UdpDnsTransport {
 
             this.options.log.debug(`DoH success, DNS response length: ${udpSize}`);
 
-            if (this.isHeaderSent) {
-              const combined = await new Blob([udpSizeBuffer, dnsQueryResult]).arrayBuffer();
-              this.options.webSocket.send(combined);
-            } else {
-              const combined = await new Blob([
-                this.options.responseHeader,
-                udpSizeBuffer,
-                dnsQueryResult,
-              ]).arrayBuffer();
-              this.options.webSocket.send(combined);
-              this.isHeaderSent = true;
-            }
+            const dnsQueryArray = new Uint8Array(dnsQueryResult);
+            const combined = new Uint8Array(udpSizeBuffer.length + dnsQueryArray.length);
+            combined.set(udpSizeBuffer, 0);
+            combined.set(dnsQueryArray, udpSizeBuffer.length);
+            this.options.webSocket.send(combined);
           },
         }),
       )
@@ -91,6 +83,7 @@ export class UdpDnsTransport {
       });
 
     this.writer = transformStream.writable.getWriter();
+    this.options.webSocket.send(this.options.responseHeader);
   }
 
   write(chunk: Uint8Array): void {

@@ -22,7 +22,7 @@ const MIN_COMMAND_HEADER_LENGTH = 19;
  * 统一的短包错误信息
  * 用于分片/流式读取时提示继续累积数据
  */
-const BUFFER_TOO_SHORT_MESSAGE = 'Invalid data: buffer too short';
+export const BUFFER_TOO_SHORT_MESSAGE = 'Invalid data: buffer too short';
 
 /**
  * UUID 字段位置
@@ -76,8 +76,11 @@ export function createSingleUUIDValidator(userID: string): UUIDValidator {
  * @param validateUUID UUID 验证器函数，验证 UUID 是否有效
  * @returns HeaderResult 解析结果
  */
-export function processHeader(buffer: ArrayBuffer, validateUUID: UUIDValidator): HeaderResult {
-  const bytes = new Uint8Array(buffer);
+export function processHeader(
+  buffer: ArrayBuffer | ArrayBufferLike | Uint8Array,
+  validateUUID: UUIDValidator,
+): HeaderResult {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
   // 至少需要读取到 command 字段
   if (bytes.byteLength < MIN_COMMAND_HEADER_LENGTH) {

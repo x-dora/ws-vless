@@ -30,7 +30,7 @@
   // 主入口文件
   "main": "src/index.ts",
   // 兼容性日期
-  "compatibility_date": "2024-03-14",
+  "compatibility_date": "2026-03-17",
   "compatibility_flags": [],
   // 可观测性配置
   "observability": {

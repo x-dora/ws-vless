@@ -179,7 +179,12 @@ export class TrafficStatsService {
       return true;
     }
 
-    const batchEndpoint = this.endpoint?.replace('/worker/report', '/worker/batch-report');
+    const endpoint = this.endpoint;
+    if (!endpoint) {
+      return true;
+    }
+
+    const batchEndpoint = endpoint.replace('/worker/report', '/worker/batch-report');
 
     try {
       const headers: Record<string, string> = {

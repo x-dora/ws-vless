@@ -28,6 +28,11 @@ export interface TcpTransportOptions {
 
 export class TcpTransport {
   private socket: Socket | null = null;
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private pendingChunks: Uint8Array[] = [];
+  private drainingPending = false;
+  private responseHeaderSent = false;
+  private closed = false;
   private retryAttempted = false;
 
   constructor(private readonly options: TcpTransportOptions) {}
@@ -42,6 +47,10 @@ export class TcpTransport {
 
       await this.pipeRemoteToWebSocket(tcpSocket, async () => await this.retry('no incoming data'));
     } catch (error) {
+      if (this.closed) {
+        return;
+      }
+
       if (isSubrequestBudgetExceededError(error)) {
         this.options.log.warn(`TCP budget exhausted: ${error.message}`);
         safeCloseWebSocket(this.options.webSocket);
@@ -61,26 +70,29 @@ export class TcpTransport {
   }
 
   async send(chunk: Uint8Array): Promise<void> {
-    if (!this.socket) {
+    if (this.closed) {
       return;
     }
 
-    this.options.trafficTracker?.addUplink(chunk.byteLength);
-    const writer = this.socket.writable.getWriter();
-    try {
-      await writer.write(chunk);
-    } finally {
-      writer.releaseLock();
+    if (!this.writer || this.drainingPending) {
+      this.pendingChunks.push(chunk);
+      return;
     }
+
+    await this.writeChunk(chunk);
   }
 
   close(): void {
-    if (!this.socket) {
+    if (this.closed) {
       return;
     }
 
+    this.closed = true;
+    this.pendingChunks = [];
+    this.releaseWriter();
+
     try {
-      this.socket.close();
+      this.socket?.close();
     } catch {
       // ignore
     }
@@ -100,7 +112,8 @@ export class TcpTransport {
       port,
     });
 
-    this.socket = tcpSocket;
+    this.replaceSocket(tcpSocket);
+    this.observeSocketClosed(tcpSocket, false);
     this.options.log.debug(
       mode === 'direct'
         ? `Connecting to ${hostname}:${port}`
@@ -108,16 +121,19 @@ export class TcpTransport {
     );
 
     await tcpSocket.opened;
+    if (this.closed) {
+      try {
+        tcpSocket.close();
+      } catch {}
+      throw new Error('TCP transport closed');
+    }
     this.options.log.debug(`Connected to ${hostname}:${port}`);
 
-    const writer = tcpSocket.writable.getWriter();
-    try {
-      await writer.write(this.options.initialData);
-    } finally {
-      writer.releaseLock();
-    }
+    this.sendResponseHeaderOnce();
 
-    this.options.trafficTracker?.addUplink(this.options.initialData.byteLength);
+    this.writer = tcpSocket.writable.getWriter();
+    await this.writeChunk(this.options.initialData);
+    await this.drainPendingChunks();
     return tcpSocket;
   }
 
@@ -152,16 +168,87 @@ export class TcpTransport {
       return false;
     }
 
-    tcpSocket.closed
-      .catch((error: unknown) => {
-        this.options.log.error('Retry tcpSocket closed error:', String(error));
-      })
-      .finally(() => {
-        safeCloseWebSocket(this.options.webSocket);
-      });
+    this.observeSocketClosed(tcpSocket, true);
 
     await this.pipeRemoteToWebSocket(tcpSocket, null);
     return true;
+  }
+
+  private observeSocketClosed(socket: Socket, closeWebSocket: boolean): void {
+    void socket.closed
+      .catch((error: unknown) => {
+        this.options.log.debug('TCP socket closed with error:', String(error));
+      })
+      .finally(() => {
+        if (closeWebSocket) {
+          safeCloseWebSocket(this.options.webSocket);
+        }
+      });
+  }
+
+  private replaceSocket(nextSocket: Socket): void {
+    this.releaseWriter();
+
+    if (this.socket && this.socket !== nextSocket) {
+      try {
+        this.socket.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    this.socket = nextSocket;
+  }
+
+  private releaseWriter(): void {
+    if (!this.writer) {
+      return;
+    }
+
+    try {
+      this.writer.releaseLock();
+    } catch {
+      // ignore
+    }
+
+    this.writer = null;
+  }
+
+  private sendResponseHeaderOnce(): void {
+    if (this.responseHeaderSent || this.options.webSocket.readyState !== WS_READY_STATE.OPEN) {
+      return;
+    }
+
+    this.options.webSocket.send(this.options.responseHeader);
+    this.responseHeaderSent = true;
+  }
+
+  private async writeChunk(chunk: Uint8Array): Promise<void> {
+    if (!this.writer || this.closed) {
+      return;
+    }
+
+    this.options.trafficTracker?.addUplink(chunk.byteLength);
+    await this.writer.write(chunk);
+  }
+
+  private async drainPendingChunks(): Promise<void> {
+    if (!this.writer || this.drainingPending || this.closed) {
+      return;
+    }
+
+    this.drainingPending = true;
+    try {
+      while (this.pendingChunks.length > 0 && this.writer && !this.closed) {
+        const pendingChunk = this.pendingChunks.shift();
+        if (!pendingChunk) {
+          continue;
+        }
+        await this.writeChunk(pendingChunk);
+      }
+    } finally {
+      this.drainingPending = false;
+    }
   }
 
   private async pipeRemoteToWebSocket(
@@ -170,7 +257,6 @@ export class TcpTransport {
   ): Promise<void> {
     let hasIncomingData = false;
     let streamError: unknown = null;
-    let header: Uint8Array | null = this.options.responseHeader;
 
     await remoteSocket.readable
       .pipeTo(
@@ -187,13 +273,7 @@ export class TcpTransport {
               return;
             }
 
-            if (header) {
-              const combined = await new Blob([header, chunk]).arrayBuffer();
-              this.options.webSocket.send(combined);
-              header = null;
-            } else {
-              this.options.webSocket.send(chunk);
-            }
+            this.options.webSocket.send(chunk);
           },
           close: () => {
             this.options.log.debug(
