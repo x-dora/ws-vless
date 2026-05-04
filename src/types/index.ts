@@ -11,79 +11,10 @@ import type { SubrequestBudget } from '../utils/subrequest-budget';
 
 /**
  * Worker 环境变量接口
- * 在 wrangler.jsonc 中配置或通过 Cloudflare Dashboard 设置
- * 敏感信息（如密钥）应使用 wrangler secret put 命令设置
+ * Cloudflare 可见的 bindings/vars/secrets 来自 `wrangler types` 生成的 Env。
+ * 这里只保留未绑定、但业务运行时仍支持的可选扩展。
  */
-export interface WorkerEnv {
-  /** 默认 UUID，用于验证客户端 */
-  UUID?: string;
-  /** 显式代理 IP，用于 TCP 连接重试时覆盖 NAT64 回退 */
-  PROXY_IP?: string;
-  /** DNS 服务器地址，默认使用 Cloudflare DNS */
-  DNS_SERVER?: string;
-  /** NAT64 前缀列表，逗号分隔 */
-  NAT64_PREFIXES?: string;
-  /** NAT64 A 记录解析器地址 */
-  NAT64_RESOLVER_URL?: string;
-
-  // =========================================================================
-  // API 安全配置
-  // =========================================================================
-
-  /** API 访问密钥，保护 /api/* 端点 */
-  API_KEY?: string;
-  /** 开发模式标记，设置为 "true" 启用默认 UUID */
-  DEV_MODE?: string;
-
-  // =========================================================================
-  // Remnawave API 配置
-  // =========================================================================
-
-  /** Remnawave API 地址 (如: https://panel.example.com) */
-  RW_API_URL?: string;
-  /** Remnawave API 密钥 */
-  RW_API_KEY?: string;
-  /** UUID 缓存时间（秒），默认 300 */
-  UUID_CACHE_TTL?: string;
-
-  // =========================================================================
-  // Mux 配置
-  // =========================================================================
-
-  /** 是否启用 Mux 多路复用，默认 "true" */
-  MUX_ENABLED?: string;
-  /** Mux 连接超时时间（秒），默认 300 */
-  MUX_TIMEOUT?: string;
-  /** 统一出站预算上限（默认 48） */
-  SUBREQUEST_LIMIT?: string;
-  /** 兼容旧名，优先级低于 SUBREQUEST_LIMIT */
-  MAX_SUBREQUESTS?: string;
-
-  // =========================================================================
-  // 日志配置
-  // =========================================================================
-
-  /** 日志级别: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG"
-   * 默认：开发模式 DEBUG，生产模式 WARN */
-  LOG_LEVEL?: string;
-
-  // =========================================================================
-  // 流量统计上报配置
-  // =========================================================================
-
-  /** 流量上报端点 URL (如: http://your-server:2222/worker/report) */
-  STATS_REPORT_URL?: string;
-  /** 流量上报认证 Token */
-  STATS_REPORT_TOKEN?: string;
-
-  // =========================================================================
-  // 缓存配置（分层缓存）
-  // L1: Cache API（始终启用）
-  // L2: KV 或 D1（可选，KV 优先）
-  // =========================================================================
-
-  /** KV 命名空间绑定（可选，作为 L2 缓存） */
-  UUID_KV?: KVNamespace;
+export interface WorkerEnv extends Env {
   /** D1 数据库绑定（可选，作为 L2 缓存，KV 优先） */
   UUID_D1?: D1Database;
 }

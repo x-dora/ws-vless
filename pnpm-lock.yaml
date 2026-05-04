@@ -14,9 +14,6 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.12.21
         version: 0.12.21(@cloudflare/workers-types@4.20260503.1)(@vitest/runner@3.2.4)(@vitest/snapshot@3.2.4)(vitest@3.2.4)
-      '@cloudflare/workers-types':
-        specifier: ^4.20260503.1
-        version: 4.20260503.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1193,7 +1190,8 @@ snapshots:
   '@cloudflare/workerd-windows-64@1.20260310.1':
     optional: true
 
-  '@cloudflare/workers-types@4.20260503.1': {}
+  '@cloudflare/workers-types@4.20260503.1':
+    optional: true
 
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
