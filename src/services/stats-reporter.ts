@@ -13,6 +13,7 @@ import {
 } from '../utils/subrequest-budget';
 
 const log = createLogger('Traffic');
+const FAILURE_WARN_INTERVAL_MS = 60_000;
 
 export type TrafficType = 'tcp' | 'udp' | 'mux';
 
@@ -81,6 +82,7 @@ export class TrafficStatsService {
   private readonly authToken?: string;
   private readonly timeout: number;
   private readonly enabled: boolean;
+  private lastFailureWarnAt = 0;
 
   constructor(options: TrafficStatsServiceOptions = {}) {
     this.endpoint = options.endpoint;
@@ -145,7 +147,7 @@ export class TrafficStatsService {
         return true;
       }
 
-      log.warn(`traffic report failed: ${response.status} ${response.statusText}`);
+      this.logReportFailure(`traffic report failed: ${response.status} ${response.statusText}`);
       return false;
     } catch (error) {
       if (isSubrequestBudgetExceededError(error)) {
@@ -154,9 +156,9 @@ export class TrafficStatsService {
       }
 
       if (error instanceof Error && error.name === 'AbortError') {
-        log.warn('traffic report timeout');
+        this.logReportFailure('traffic report timeout');
       } else {
-        log.warn('traffic report error:', error);
+        this.logReportFailure('traffic report error', error);
       }
 
       return false;
@@ -223,6 +225,19 @@ export class TrafficStatsService {
       return false;
     }
   }
+
+  private logReportFailure(message: string, error?: unknown): void {
+    const now = Date.now();
+    const detail = error === undefined ? '' : `: ${formatErrorDetail(error)}`;
+
+    if (now - this.lastFailureWarnAt >= FAILURE_WARN_INTERVAL_MS) {
+      this.lastFailureWarnAt = now;
+      log.warn(`${message}${detail}`);
+      return;
+    }
+
+    log.debug(`${message}${detail}`);
+  }
 }
 
 function formatBytes(bytes: number): string {
@@ -234,4 +249,12 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const index = Math.floor(Math.log(bytes) / Math.log(k));
   return `${Number.parseFloat((bytes / k ** index).toFixed(2))} ${sizes[index]}`;
+}
+
+function formatErrorDetail(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return String(error);
 }

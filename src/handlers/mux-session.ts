@@ -23,7 +23,7 @@ import {
 } from '../core/mux';
 import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
-import { safeCloseWebSocket } from '../utils/_websocket';
+import { isClosedWritableStreamError, safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
 import {
@@ -563,12 +563,20 @@ export class MuxSession {
       await this.writeToSocket(subConn, initialData);
     }
 
+    if (subConn.closed) {
+      return;
+    }
+
     while (subConn.pendingData.length > 0 && !subConn.closed) {
       const pendingChunk = subConn.pendingData.shift();
       if (!pendingChunk) {
         break;
       }
       await this.writeToSocket(subConn, pendingChunk);
+    }
+
+    if (subConn.closed) {
+      return;
     }
 
     const retry = allowRetry
@@ -626,6 +634,11 @@ export class MuxSession {
         await subConn.writer.write(data);
       }
     } catch (error) {
+      if (isClosedWritableStreamError(error)) {
+        this.closeSubConnectionRef(subConn);
+        return;
+      }
+
       if (!subConn.closed) {
         throw error;
       }
@@ -738,6 +751,12 @@ export class MuxSession {
           try {
             await this.writeToSocket(subConn, data);
           } catch (error) {
+            if (isClosedWritableStreamError(error)) {
+              this.log.debug(`TCP writer closed id=${id}`);
+              this.closeSubConnection(id);
+              return;
+            }
+
             if (!subConn.closed) {
               this.log.error(`TCP write error id=${id}: ${error}`);
               this.closeSubConnection(id);
@@ -796,6 +815,10 @@ export class MuxSession {
       return;
     }
 
+    this.closeSubConnectionRef(subConn);
+  }
+
+  private closeSubConnectionRef(subConn: SubConnection): void {
     subConn.closed = true;
 
     if (subConn.writer) {
@@ -810,7 +833,7 @@ export class MuxSession {
       } catch {}
     }
 
-    this.removeConnection(id);
+    this.removeConnection(subConn.id);
   }
 
   private removeConnection(id: number): void {

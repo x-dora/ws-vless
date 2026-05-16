@@ -24,6 +24,7 @@ interface WritableSocketOptions {
   opened?: Promise<SocketInfo>;
   readable?: ReadableStream<Uint8Array>;
   closed?: Promise<void>;
+  write?: (chunk: Uint8Array) => Promise<void>;
 }
 
 interface WritableMockSocket extends MockSocket {
@@ -51,7 +52,7 @@ function createWritableSocket(options: WritableSocketOptions = {}): WritableMock
   const writer = {
     write: vi.fn((chunk: Uint8Array) => {
       writes.push(cloneChunk(chunk));
-      return Promise.resolve();
+      return options.write?.(chunk) ?? Promise.resolve();
     }),
     releaseLock,
   };
@@ -360,6 +361,45 @@ describe('TCP outbound fallback', () => {
 
     expect(socket.releaseLock).toHaveBeenCalledOnce();
     expect(socket.writes).toEqual([new Uint8Array([1, 2, 3])]);
+  });
+
+  it('treats writes to a closed outbound stream as connection teardown', async () => {
+    let closeReadable!: () => void;
+    const readable = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeReadable = () => controller.close();
+      },
+    });
+    const socket = createWritableSocket({
+      readable,
+      write: async (chunk) => {
+        if (chunk[0] === 4) {
+          throw new TypeError('This WritableStream has been closed.');
+        }
+      },
+    });
+    connectMock.mockReturnValueOnce(socket);
+
+    const webSocket = createWebSocketStub();
+    const transport = new TcpTransport({
+      addressRemote: 'example.com',
+      addressType: AddressType.Domain,
+      portRemote: 443,
+      initialData: new Uint8Array([1, 2, 3]),
+      webSocket,
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+    });
+
+    const connectPromise = transport.connect();
+    await flushMicrotasks();
+
+    await expect(transport.send(new Uint8Array([4, 5, 6]))).resolves.toBeUndefined();
+    closeReadable();
+    await connectPromise;
+
+    expect(socket.close).toHaveBeenCalled();
+    expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
   });
 
   it('closes the upstream websocket when the retry budget is exhausted', async () => {

@@ -179,6 +179,35 @@ describe('subrequest budget', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('rate-limits repeated stats report failure warnings', async () => {
+    const fetchMock = vi.fn(async () => new Response('bad gateway', { status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const service = new TrafficStatsService({
+      endpoint: 'https://stats.example.test/worker/report',
+    });
+
+    await expect(
+      service.report({
+        uuid: TEST_UUID,
+        uplink: 128,
+        downlink: 256,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      service.report({
+        uuid: TEST_UUID,
+        uplink: 128,
+        downlink: 256,
+      }),
+    ).resolves.toBe(false);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy).not.toHaveBeenCalled();
+  });
+
   it('fetches each provider only once when collecting stats', async () => {
     vi.stubGlobal('caches', {
       default: {

@@ -41,7 +41,10 @@
     "logs": {
       "enabled": true
     }
-  }
+  },
+  "keep_vars": true,
+  "workers_dev": true,
+  "preview_urls": true
   /**
    * 环境变量说明
    *

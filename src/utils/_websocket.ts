@@ -33,6 +33,22 @@ export function isWebSocketOpen(socket: WebSocket): boolean {
   return socket.readyState === WS_READY_STATE.OPEN;
 }
 
+/**
+ * Workers runtime reports closed outbound sockets as TypeError from
+ * WritableStreamDefaultWriter.write(). Treat those as normal connection
+ * teardown instead of application errors.
+ */
+export function isClosedWritableStreamError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error instanceof TypeError &&
+    /writablestream.*closed|closed.*writablestream/i.test(error.message)
+  );
+}
+
 // ============================================================================
 // 编码辅助
 // ============================================================================

@@ -8,7 +8,7 @@ import { connect } from 'cloudflare:sockets';
 import type { TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction } from '../types';
 import { WS_READY_STATE } from '../types';
-import { safeCloseWebSocket } from '../utils/_websocket';
+import { isClosedWritableStreamError, safeCloseWebSocket } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
 import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
@@ -79,7 +79,18 @@ export class TcpTransport {
       return;
     }
 
-    await this.writeChunk(chunk);
+    try {
+      await this.writeChunk(chunk);
+    } catch (error) {
+      if (isClosedWritableStreamError(error)) {
+        this.options.log.debug('TCP outbound writer already closed');
+        this.close();
+        safeCloseWebSocket(this.options.webSocket);
+        return;
+      }
+
+      throw error;
+    }
   }
 
   close(): void {
@@ -229,7 +240,16 @@ export class TcpTransport {
     }
 
     this.options.trafficTracker?.addUplink(chunk.byteLength);
-    await this.writer.write(chunk);
+    try {
+      await this.writer.write(chunk);
+    } catch (error) {
+      if (isClosedWritableStreamError(error)) {
+        this.close();
+        safeCloseWebSocket(this.options.webSocket);
+      }
+
+      throw error;
+    }
   }
 
   private async drainPendingChunks(): Promise<void> {

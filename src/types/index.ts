@@ -15,6 +15,8 @@ import type { SubrequestBudget } from '../utils/subrequest-budget';
  * 这里只保留未绑定、但业务运行时仍支持的可选扩展。
  */
 export interface WorkerEnv extends Env {
+  /** KV 命名空间绑定（可选，作为 L2 缓存，KV 优先） */
+  UUID_KV?: KVNamespace;
   /** D1 数据库绑定（可选，作为 L2 缓存，KV 优先） */
   UUID_D1?: D1Database;
 }

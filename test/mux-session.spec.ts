@@ -21,6 +21,10 @@ interface MockSocket extends Partial<Socket> {
   close: ReturnType<typeof vi.fn>;
 }
 
+interface WritableSocketOptions {
+  write?: (chunk: Uint8Array) => Promise<void>;
+}
+
 function createEmptySocket(): MockSocket {
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -51,6 +55,28 @@ function createEmptySocket(): MockSocket {
         return Promise.resolve();
       },
     }),
+    close: vi.fn(() => {
+      resolveClosed();
+    }),
+  };
+}
+
+function createWritableSocket(options: WritableSocketOptions = {}): MockSocket {
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+
+  return {
+    opened: Promise.resolve({}),
+    closed,
+    readable: new ReadableStream<Uint8Array>(),
+    writable: {
+      getWriter: vi.fn(() => ({
+        write: vi.fn((chunk: Uint8Array) => options.write?.(chunk) ?? Promise.resolve()),
+        releaseLock: vi.fn(),
+      })),
+    } as unknown as WritableStream<Uint8Array>,
     close: vi.fn(() => {
       resolveClosed();
     }),
@@ -175,5 +201,47 @@ describe('Mux TCP fallback', () => {
     expect(
       (webSocket as unknown as { send: ReturnType<typeof vi.fn> }).send,
     ).not.toHaveBeenCalled();
+  });
+
+  it('closes a TCP sub-connection when the outbound writer is already closed', async () => {
+    const socket = createWritableSocket({
+      write: async () => {
+        throw new TypeError('This WritableStream has been closed.');
+      },
+    });
+    connectMock.mockReturnValueOnce(socket);
+
+    const webSocket = createWebSocketStub();
+    const log = createLog();
+    const session = createMuxSession({
+      webSocket,
+      responseHeader: new Uint8Array([0, 0]),
+      log,
+    });
+
+    const subConn: SubConnection = {
+      id: 9,
+      address: 'example.com',
+      addressType: AddressType.Domain,
+      port: 443,
+      network: MuxNetwork.TCP,
+      closed: false,
+      createdAt: Date.now(),
+      ready: false,
+      pendingData: [],
+    };
+
+    await (
+      session as unknown as {
+        handleTCPSubConnection: (
+          connection: SubConnection,
+          initialData?: Uint8Array,
+        ) => Promise<void>;
+      }
+    ).handleTCPSubConnection(subConn, new Uint8Array([1, 2, 3]));
+
+    expect(subConn.closed).toBe(true);
+    expect(socket.close).toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
   });
 });

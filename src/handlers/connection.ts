@@ -15,7 +15,11 @@ import {
 } from '../core/header';
 import type { TrafficStatsService, TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction, HeaderResult } from '../types';
-import { decodeWebSocketEarlyData, safeCloseWebSocket } from '../utils/_websocket';
+import {
+  decodeWebSocketEarlyData,
+  isClosedWritableStreamError,
+  safeCloseWebSocket,
+} from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { createBudgetedFetcher, isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
@@ -140,6 +144,8 @@ class TunnelConnectionSession {
       this.handleChunk(chunk).catch((err) => {
         if (isSubrequestBudgetExceededError(err)) {
           this.log.warn(`Subrequest budget exhausted: ${this.scope.budget.describe()}`);
+        } else if (isClosedWritableStreamError(err)) {
+          this.log.debug('WebSocket message arrived after outbound writer closed');
         } else {
           this.log.error('WebSocket message handle error', String(err));
         }
@@ -152,7 +158,7 @@ class TunnelConnectionSession {
     });
 
     this.webSocket.addEventListener('error', () => {
-      this.log.error('WebSocket server error');
+      this.log.debug('WebSocket server error');
       this.finalize();
     });
 
@@ -346,9 +352,11 @@ class TunnelConnectionSession {
         this.trafficTracker.markReported();
         const reportPromise = this.trafficStatsService
           .report(stats, this.scope.budget)
-          .then((ok) =>
-            ok ? this.log.debug('Stats reported') : this.log.warn('Stats report failed'),
-          )
+          .then((ok) => {
+            if (ok) {
+              this.log.debug('Stats reported');
+            }
+          })
           .catch((error) => {
             this.log.error(`Stats report error: ${String(error)}`);
           });
