@@ -1,8 +1,8 @@
 /**
  * XHTTP stream-one gateway.
  *
- * The first implementation supports VLESS TCP only. UDP and Mux are rejected
- * before any outbound TCP socket is created.
+ * Supports VLESS TCP and DNS-only UDP. Mux is rejected before any outbound
+ * transport is created.
  */
 
 import type { RequestScope } from '../app/types';
@@ -22,6 +22,7 @@ import type { OutboundRetryOptions } from '../utils/nat64';
 import { createBudgetedFetcher, isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
 import { StreamDownlinkSink } from './downlink';
 import { TcpTransport } from './tcp';
+import { UdpDnsTransport } from './udp';
 
 type WorkerBytes = Uint8Array<ArrayBufferLike>;
 
@@ -117,6 +118,7 @@ class XHttpConnectionSession {
   private portWithRandomLog = '';
   private trafficTracker: TrafficTracker | null = null;
   private tcpTransport: TcpTransport | null = null;
+  private udpTransport: UdpDnsTransport | null = null;
   private readerLocked = false;
   private cancelingReader = false;
   private finalized = false;
@@ -150,15 +152,15 @@ class XHttpConnectionSession {
       return this.badRequest('Bad Request');
     }
 
-    if (parsed.header.isUDP) {
-      this.rejectAndReleaseReader();
-      this.log.debug('XHTTP UDP command rejected');
-      return this.badRequest('Bad Request');
-    }
-
     if (parsed.header.isMux) {
       this.rejectAndReleaseReader();
       this.log.debug('XHTTP Mux command rejected');
+      return this.badRequest('Bad Request');
+    }
+
+    if (parsed.header.isUDP && parsed.header.portRemote !== 53) {
+      this.rejectAndReleaseReader();
+      this.log.debug('XHTTP UDP non-DNS command rejected');
       return this.badRequest('Bad Request');
     }
 
@@ -189,7 +191,7 @@ class XHttpConnectionSession {
           }),
         );
 
-        this.createTcpTransport(parsed.header, parsed.rawClientData, responseHeader, downlink);
+        this.createTransport(parsed.header, parsed.rawClientData, responseHeader, downlink);
         void this.runTunnel(forwardDownlink);
       },
       cancel: () => {
@@ -310,6 +312,41 @@ class XHttpConnectionSession {
     });
   }
 
+  private createUdpTransport(
+    rawClientData: WorkerBytes,
+    responseHeader: Uint8Array,
+    downlink: StreamDownlinkSink,
+  ): void {
+    this.udpTransport = new UdpDnsTransport({
+      downlink,
+      responseHeader,
+      log: this.log,
+      dnsServer: this.config.dnsServer,
+      budget: this.scope.budget,
+    });
+
+    if (rawClientData.length > 0) {
+      void this.udpTransport.write(rawClientData).catch((error) => {
+        this.log.error('XHTTP UDP initial payload error', String(error));
+        this.finalize();
+      });
+    }
+  }
+
+  private createTransport(
+    header: ParsedInitialHeader['header'],
+    rawClientData: WorkerBytes,
+    responseHeader: Uint8Array,
+    downlink: StreamDownlinkSink,
+  ): void {
+    if (header.isUDP) {
+      this.createUdpTransport(rawClientData, responseHeader, downlink);
+      return;
+    }
+
+    this.createTcpTransport(header, rawClientData, responseHeader, downlink);
+  }
+
   private async runTunnel(forwardDownlink: Promise<void>): Promise<void> {
     try {
       await Promise.all([this.connectTcpTransport(), this.pumpRequestBody(), forwardDownlink]);
@@ -345,11 +382,12 @@ class XHttpConnectionSession {
         const { done, value } = await this.reader.read();
         if (done) {
           await this.tcpTransport?.closeOutbound();
+          await this.udpTransport?.closeInbound();
           break;
         }
 
         if (value.byteLength > 0) {
-          await this.tcpTransport?.send(value);
+          await this.sendClientChunk(value);
         }
       }
     } catch (error) {
@@ -363,6 +401,15 @@ class XHttpConnectionSession {
       this.cancelingReader = false;
       this.releaseReader();
     }
+  }
+
+  private async sendClientChunk(chunk: Uint8Array): Promise<void> {
+    if (this.udpTransport) {
+      await this.udpTransport.write(chunk);
+      return;
+    }
+
+    await this.tcpTransport?.send(chunk);
   }
 
   private rejectAndReleaseReader(): void {
@@ -401,6 +448,7 @@ class XHttpConnectionSession {
     this.finalized = true;
 
     this.tcpTransport?.close();
+    this.udpTransport?.close();
     this.cancelRequestReader();
 
     if (this.trafficTracker) {

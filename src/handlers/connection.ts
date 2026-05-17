@@ -178,7 +178,7 @@ class TunnelConnectionSession {
     }
 
     if (this.udpTransport) {
-      this.udpTransport.write(bytes);
+      await this.udpTransport.write(bytes);
       return;
     }
 
@@ -264,7 +264,7 @@ class TunnelConnectionSession {
     }
 
     if (header.isUDP) {
-      this.startUdpTransport(header.portRemote, rawClientData);
+      await this.startUdpTransport(header.portRemote, rawClientData);
       return;
     }
 
@@ -287,13 +287,16 @@ class TunnelConnectionSession {
     }
   }
 
-  private startUdpTransport(portRemote: number | undefined, rawClientData: WorkerBytes): void {
+  private async startUdpTransport(
+    portRemote: number | undefined,
+    rawClientData: WorkerBytes,
+  ): Promise<void> {
     if (portRemote !== 53) {
       throw new Error('UDP proxy only supports DNS (port 53)');
     }
 
     this.udpTransport = new UdpDnsTransport({
-      webSocket: this.webSocket,
+      downlink: new WebSocketDownlinkSink(this.webSocket),
       responseHeader: this.responseHeader,
       log: this.log,
       dnsServer: this.config.dnsServer,
@@ -301,7 +304,7 @@ class TunnelConnectionSession {
     });
 
     if (rawClientData.length > 0) {
-      this.udpTransport.write(rawClientData);
+      await this.udpTransport.write(rawClientData);
     }
   }
 
@@ -344,6 +347,7 @@ class TunnelConnectionSession {
     }
 
     this.tcpTransport?.close();
+    this.udpTransport?.close();
 
     if (this.trafficTracker) {
       const stats = this.trafficTracker.getStats();

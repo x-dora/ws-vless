@@ -1,5 +1,5 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeConfig } from '../src/config';
 import { createSingleUUIDValidator } from '../src/core/header';
 import { isXHttpStreamOneRequest, XHttpGateway } from '../src/handlers/xhttp';
@@ -90,6 +90,14 @@ function createChunkedRequestBody(chunks: Uint8Array[]): ReadableStream<Uint8Arr
       controller.close();
     },
   });
+}
+
+function createUdpPacket(payload: Uint8Array): Uint8Array {
+  const packet = new Uint8Array(2 + payload.byteLength);
+  packet[0] = (payload.byteLength >> 8) & 0xff;
+  packet[1] = payload.byteLength & 0xff;
+  packet.set(payload, 2);
+  return packet;
 }
 
 function createWritableSocket(readableChunks: Uint8Array[] = []): WritableMockSocket {
@@ -307,6 +315,10 @@ describe('XHTTP gateway', () => {
     connectMock.mockReset();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('accepts valid VLESS TCP headers and streams response header plus remote data', async () => {
     const socket = createWritableSocket([new Uint8Array([7, 8, 9])]);
     connectMock.mockReturnValueOnce(socket);
@@ -422,14 +434,11 @@ describe('XHTTP gateway', () => {
     expect(connectMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['UDP', ProxyCommand.UDP],
-    ['Mux', ProxyCommand.MUX],
-  ])('rejects %s commands without creating a TCP socket', async (_name, command) => {
+  it('rejects Mux commands without creating a TCP socket', async () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({ command }),
+      body: buildVlessHeader({ command: ProxyCommand.MUX }),
     });
 
     const response = await createGateway().handle(
@@ -440,6 +449,95 @@ describe('XHTTP gateway', () => {
 
     expect(response.status).toBe(400);
     expect(connectMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts UDP DNS over XHTTP and streams a length-prefixed DoH response', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(new Uint8Array([9, 8, 7]))));
+    vi.stubGlobal('fetch', fetchMock);
+    const dnsQuery = new Uint8Array([1, 2, 3]);
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc' },
+      body: buildVlessHeader({
+        command: ProxyCommand.UDP,
+        port: 53,
+        payload: createUdpPacket(dnsQuery),
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    const response = await createGateway().handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    const body = await readResponseBytes(response);
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(200);
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith('https://1.1.1.1/dns-query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/dns-message' },
+      body: dnsQuery,
+    });
+    expect(body).toEqual(new Uint8Array([1, 0, 0, 3, 9, 8, 7]));
+  });
+
+  it('rejects non-DNS UDP over XHTTP before DoH or TCP is used', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc' },
+      body: buildVlessHeader({
+        command: ProxyCommand.UDP,
+        port: 123,
+        payload: createUdpPacket(new Uint8Array([1, 2, 3])),
+      }),
+    });
+
+    const response = await createGateway().handle(
+      request,
+      { executionContext: createExecutionContext(), budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+
+    expect(response.status).toBe(400);
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reassembles XHTTP UDP datagrams split between header payload and later body chunks', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(new Uint8Array([4, 5]))));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc' },
+      body: createChunkedRequestBody([
+        buildVlessHeader({
+          command: ProxyCommand.UDP,
+          port: 53,
+          payload: new Uint8Array([0, 3, 1]),
+        }),
+        new Uint8Array([2, 3]),
+      ]),
+    });
+    const ctx = createExecutionContext();
+
+    const response = await createGateway().handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    const body = await readResponseBytes(response);
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(200);
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.body).toEqual(new Uint8Array([1, 2, 3]));
+    expect(body).toEqual(new Uint8Array([1, 0, 0, 2, 4, 5]));
   });
 
   it('uses the same query retry overrides as websocket connections', async () => {
