@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocketDownlinkSink } from '../src/handlers/downlink';
 import { TcpTransport } from '../src/handlers/tcp';
 import { AddressType, type ConnLogFunction, WS_READY_STATE } from '../src/types';
 import { ipv4ToNat64IPv6 } from '../src/utils/nat64';
@@ -163,7 +164,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: { proxyIP: '203.0.113.8' },
@@ -190,7 +191,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.IPv4,
       portRemote: 8443,
       initialData: new Uint8Array([9, 9, 9]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: { nat64Prefixes: ['2602:fc59:11:64::'] },
@@ -215,7 +216,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.IPv6,
       portRemote: 443,
       initialData: new Uint8Array([7, 7, 7]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: { nat64Prefixes: ['2602:fc59:11:64::'] },
@@ -241,7 +242,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.IPv4,
       portRemote: 8443,
       initialData: new Uint8Array([9, 9, 9]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: { proxyIP: '2001:db8::5' },
@@ -276,21 +277,51 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
     });
 
     const connectPromise = transport.connect();
-    await transport.send(new Uint8Array([4, 5, 6]));
+    const sendPromise = transport.send(new Uint8Array([4, 5, 6]));
     expect(socket.writes).toEqual([]);
 
     resolveOpened({});
     await flushMicrotasks();
     closeReadable();
     await connectPromise;
+    await sendPromise;
 
     expect(socket.writes).toEqual([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]);
+  });
+
+  it('rejects queued client data when the TCP connection fails before the writer is ready', async () => {
+    let rejectOpened!: (error: unknown) => void;
+    const opened = new Promise<SocketInfo>((_resolve, reject) => {
+      rejectOpened = reject;
+    });
+    const socket = createWritableSocket({ opened });
+    connectMock.mockReturnValueOnce(socket);
+
+    const webSocket = createWebSocketStub();
+    const transport = new TcpTransport({
+      addressRemote: 'example.com',
+      addressType: AddressType.Domain,
+      portRemote: 443,
+      initialData: new Uint8Array([1, 2, 3]),
+      downlink: new WebSocketDownlinkSink(webSocket),
+      responseHeader: new Uint8Array([0, 0]),
+      log: createLog(),
+    });
+
+    const connectPromise = transport.connect();
+    const sendPromise = transport.send(new Uint8Array([4, 5, 6]));
+
+    rejectOpened(new Error('connect failed'));
+
+    await connectPromise;
+    await expect(sendPromise).rejects.toThrow('connect failed');
+    expect((webSocket as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
   });
 
   it('sends the TCP response header only once across retry and keeps downlink payload clean', async () => {
@@ -312,7 +343,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: { proxyIP: '203.0.113.8' },
@@ -347,13 +378,15 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
     });
 
     const connectPromise = transport.connect();
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([new Uint8Array([1, 2, 3])]);
+    });
     transport.close();
     await expect(transport.send(new Uint8Array([4, 5, 6]))).resolves.toBeUndefined();
     closeReadable();
@@ -386,7 +419,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
     });
@@ -413,7 +446,7 @@ describe('TCP outbound fallback', () => {
       addressType: AddressType.Domain,
       portRemote: 443,
       initialData: new Uint8Array([1, 2, 3]),
-      webSocket,
+      downlink: new WebSocketDownlinkSink(webSocket),
       responseHeader: new Uint8Array([0, 0]),
       log: createLog(),
       retryOptions: {

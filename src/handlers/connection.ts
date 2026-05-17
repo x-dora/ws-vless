@@ -23,6 +23,7 @@ import {
 import { createConnLog } from '../utils/logger';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { createBudgetedFetcher, isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
+import { WebSocketDownlinkSink } from './downlink';
 import { createMuxSession, type MuxSession } from './mux-session';
 import { TcpTransport } from './tcp';
 import { UdpDnsTransport } from './udp';
@@ -313,7 +314,7 @@ class TunnelConnectionSession {
       addressType: header.addressType,
       portRemote: header.portRemote ?? 443,
       initialData: rawClientData,
-      webSocket: this.webSocket,
+      downlink: new WebSocketDownlinkSink(this.webSocket),
       responseHeader: this.responseHeader,
       log: this.log,
       retryOptions: this.retryOptions,

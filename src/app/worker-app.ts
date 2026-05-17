@@ -6,6 +6,7 @@
 
 import { createUUIDValidator } from '../core/header';
 import { WebSocketGateway } from '../handlers/connection';
+import { isXHttpStreamOneRequest, XHttpGateway } from '../handlers/xhttp';
 import { HttpRouter } from '../http/http-router';
 import type { WorkerEnv } from '../types';
 import { isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
@@ -17,6 +18,7 @@ const appCache = new WeakMap<WorkerEnv, WorkerApp>();
 export class WorkerApp {
   private readonly httpRouter: HttpRouter;
   private readonly websocketGateway: WebSocketGateway;
+  private readonly xhttpGateway: XHttpGateway;
 
   constructor(private readonly context: AppContext) {
     this.httpRouter = new HttpRouter({
@@ -25,6 +27,11 @@ export class WorkerApp {
     });
 
     this.websocketGateway = new WebSocketGateway({
+      config: this.context.config,
+      trafficStatsService: this.context.trafficStatsService,
+    });
+
+    this.xhttpGateway = new XHttpGateway({
       config: this.context.config,
       trafficStatsService: this.context.trafficStatsService,
     });
@@ -50,6 +57,20 @@ export class WorkerApp {
 
         const response = await this.websocketGateway.handle(request, scope, validateUUID);
         this.context.requestMetrics.recordSuccess(response.status);
+        return response;
+      }
+
+      if (isXHttpStreamOneRequest(request)) {
+        const uuidManager = this.context.createUUIDManager(scope.budget);
+        const validUUIDs = await uuidManager.getAllUUIDs();
+        const validateUUID = createUUIDValidator(validUUIDs);
+
+        const response = await this.xhttpGateway.handle(request, scope, validateUUID);
+        if (response.status >= 400) {
+          this.context.requestMetrics.recordError(response.status);
+        } else {
+          this.context.requestMetrics.recordSuccess(response.status);
+        }
         return response;
       }
 

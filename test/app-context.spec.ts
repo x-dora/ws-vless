@@ -10,6 +10,7 @@ import { AuthService } from '../src/http/auth-service';
 import { RequestMetricsService } from '../src/services/request-metrics';
 import { TrafficStatsService } from '../src/services/stats-reporter';
 import type { WorkerEnv } from '../src/types';
+import type { SubrequestBudget } from '../src/utils/subrequest-budget';
 
 // Mock logger to avoid console output during tests
 vi.mock('../src/utils/logger', () => ({
@@ -85,7 +86,11 @@ describe('AppContext', () => {
 
   it('creates UUID manager with budget when requested', () => {
     const context = new AppContext(env);
-    const budget = { consume: vi.fn(), remaining: vi.fn(), describe: () => 'test' } as any;
+    const budget: Pick<SubrequestBudget, 'consume' | 'remaining' | 'describe'> = {
+      consume: vi.fn(),
+      remaining: vi.fn(),
+      describe: () => 'test',
+    };
     const manager = context.createUUIDManager(budget);
 
     expect(manager).toBeDefined();

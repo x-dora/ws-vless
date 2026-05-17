@@ -1,38 +1,51 @@
 /**
  * TCP 传输层
  *
- * 负责建立远端 TCP 连接、处理重试策略，并把远端数据桥接回 WebSocket。
+ * 负责建立远端 TCP 连接、处理重试策略，并把远端数据桥接回下行 sink。
  */
 
 import { connect } from 'cloudflare:sockets';
 import type { TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction } from '../types';
-import { WS_READY_STATE } from '../types';
-import { isClosedWritableStreamError, safeCloseWebSocket } from '../utils/_websocket';
+import { isClosedWritableStreamError } from '../utils/_websocket';
 import type { OutboundRetryOptions } from '../utils/nat64';
 import { formatSocketHostname, resolveRetryTarget } from '../utils/nat64';
 import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
+import type { DownlinkSink } from './downlink';
+
+interface PendingWrite {
+  chunk: Uint8Array;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+const DEFAULT_MAX_PENDING_BYTES = 1024 * 1024;
 
 export interface TcpTransportOptions {
   addressRemote: string;
   addressType: number | undefined;
   portRemote: number;
   initialData: Uint8Array;
-  webSocket: WebSocket;
+  downlink: DownlinkSink;
   responseHeader: Uint8Array;
   log: ConnLogFunction;
   retryOptions?: OutboundRetryOptions;
   trafficTracker?: TrafficTracker | null;
   budget?: SubrequestBudget;
+  closeDownlinkOnRemoteClose?: boolean;
+  maxPendingBytes?: number;
 }
 
 export class TcpTransport {
   private socket: Socket | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
-  private pendingChunks: Uint8Array[] = [];
+  private pendingWrites: PendingWrite[] = [];
+  private pendingBytes = 0;
   private drainingPending = false;
   private responseHeaderSent = false;
   private closed = false;
+  private outboundClosed = false;
+  private closeOutboundRequested = false;
   private retryAttempted = false;
 
   constructor(private readonly options: TcpTransportOptions) {}
@@ -45,7 +58,7 @@ export class TcpTransport {
         'direct',
       );
 
-      await this.pipeRemoteToWebSocket(tcpSocket, async () => await this.retry('no incoming data'));
+      await this.pipeRemoteToDownlink(tcpSocket, async () => await this.retry('no incoming data'));
     } catch (error) {
       if (this.closed) {
         return;
@@ -53,30 +66,30 @@ export class TcpTransport {
 
       if (isSubrequestBudgetExceededError(error)) {
         this.options.log.warn(`TCP budget exhausted: ${error.message}`);
-        safeCloseWebSocket(this.options.webSocket);
+        this.fail(error);
         return;
       }
 
       if (this.retryAttempted) {
+        this.fail(error);
         throw error;
       }
 
       this.options.log.warn('Initial TCP connect failed, attempting fallback', String(error));
       const retried = await this.retry('initial connect failure');
       if (!retried) {
-        safeCloseWebSocket(this.options.webSocket);
+        this.fail(error);
       }
     }
   }
 
   async send(chunk: Uint8Array): Promise<void> {
-    if (this.closed) {
+    if (this.closed || this.outboundClosed) {
       return;
     }
 
     if (!this.writer || this.drainingPending) {
-      this.pendingChunks.push(chunk);
-      return;
+      return await this.enqueuePendingWrite(chunk);
     }
 
     try {
@@ -85,8 +98,8 @@ export class TcpTransport {
       if (isClosedWritableStreamError(error)) {
         this.options.log.debug('TCP outbound writer already closed');
         this.close();
-        safeCloseWebSocket(this.options.webSocket);
-        return;
+        this.options.downlink.close();
+        return Promise.resolve();
       }
 
       throw error;
@@ -99,7 +112,8 @@ export class TcpTransport {
     }
 
     this.closed = true;
-    this.pendingChunks = [];
+    this.outboundClosed = true;
+    this.rejectPendingWrites(new Error('TCP transport closed'));
     this.releaseWriter();
 
     try {
@@ -109,6 +123,61 @@ export class TcpTransport {
     }
 
     this.socket = null;
+  }
+
+  private enqueuePendingWrite(chunk: Uint8Array): Promise<void> {
+    const maxPendingBytes = this.options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
+    if (this.pendingBytes + chunk.byteLength > maxPendingBytes) {
+      this.close();
+      this.options.downlink.close();
+      return Promise.reject(new Error(`TCP pending write queue exceeded ${maxPendingBytes} bytes`));
+    }
+
+    this.pendingBytes += chunk.byteLength;
+    return new Promise((resolve, reject) => {
+      this.pendingWrites.push({ chunk, resolve, reject });
+    });
+  }
+
+  private rejectPendingWrites(error: unknown): void {
+    const pendingWrites = this.pendingWrites;
+    this.pendingWrites = [];
+    this.pendingBytes = 0;
+
+    for (const pendingWrite of pendingWrites) {
+      pendingWrite.reject(error);
+    }
+  }
+
+  private fail(error: unknown): void {
+    this.rejectPendingWrites(error);
+    this.close();
+    this.options.downlink.close();
+  }
+
+  async closeOutbound(): Promise<void> {
+    this.closeOutboundRequested = true;
+
+    if (this.closed || this.outboundClosed || !this.writer) {
+      return;
+    }
+
+    await this.drainPendingChunks();
+    if (!this.writer || this.closed || this.outboundClosed) {
+      return;
+    }
+
+    this.outboundClosed = true;
+    const writer = this.writer;
+    try {
+      await writer.close();
+    } catch (error) {
+      if (!isClosedWritableStreamError(error)) {
+        throw error;
+      }
+    } finally {
+      this.releaseWriter();
+    }
   }
 
   private async connectAndWrite(
@@ -140,11 +209,14 @@ export class TcpTransport {
     }
     this.options.log.debug(`Connected to ${hostname}:${port}`);
 
-    this.sendResponseHeaderOnce();
+    await this.sendResponseHeaderOnce();
 
     this.writer = tcpSocket.writable.getWriter();
     await this.writeChunk(this.options.initialData);
     await this.drainPendingChunks();
+    if (this.closeOutboundRequested) {
+      await this.closeOutbound();
+    }
     return tcpSocket;
   }
 
@@ -181,7 +253,7 @@ export class TcpTransport {
 
     this.observeSocketClosed(tcpSocket, true);
 
-    await this.pipeRemoteToWebSocket(tcpSocket, null);
+    await this.pipeRemoteToDownlink(tcpSocket, null);
     return true;
   }
 
@@ -192,7 +264,7 @@ export class TcpTransport {
       })
       .finally(() => {
         if (closeWebSocket) {
-          safeCloseWebSocket(this.options.webSocket);
+          this.options.downlink.close();
         }
       });
   }
@@ -225,17 +297,17 @@ export class TcpTransport {
     this.writer = null;
   }
 
-  private sendResponseHeaderOnce(): void {
-    if (this.responseHeaderSent || this.options.webSocket.readyState !== WS_READY_STATE.OPEN) {
+  private async sendResponseHeaderOnce(): Promise<void> {
+    if (this.responseHeaderSent || !this.options.downlink.isOpen()) {
       return;
     }
 
-    this.options.webSocket.send(this.options.responseHeader);
+    await this.options.downlink.send(this.options.responseHeader);
     this.responseHeaderSent = true;
   }
 
   private async writeChunk(chunk: Uint8Array): Promise<void> {
-    if (!this.writer || this.closed) {
+    if (!this.writer || this.closed || this.outboundClosed) {
       return;
     }
 
@@ -245,7 +317,8 @@ export class TcpTransport {
     } catch (error) {
       if (isClosedWritableStreamError(error)) {
         this.close();
-        safeCloseWebSocket(this.options.webSocket);
+        this.options.downlink.close();
+        return;
       }
 
       throw error;
@@ -259,19 +332,27 @@ export class TcpTransport {
 
     this.drainingPending = true;
     try {
-      while (this.pendingChunks.length > 0 && this.writer && !this.closed) {
-        const pendingChunk = this.pendingChunks.shift();
-        if (!pendingChunk) {
+      while (this.pendingWrites.length > 0 && this.writer && !this.closed) {
+        const pendingWrite = this.pendingWrites.shift();
+        if (!pendingWrite) {
           continue;
         }
-        await this.writeChunk(pendingChunk);
+        this.pendingBytes -= pendingWrite.chunk.byteLength;
+        try {
+          await this.writeChunk(pendingWrite.chunk);
+          pendingWrite.resolve();
+        } catch (error) {
+          pendingWrite.reject(error);
+          this.rejectPendingWrites(error);
+          throw error;
+        }
       }
     } finally {
       this.drainingPending = false;
     }
   }
 
-  private async pipeRemoteToWebSocket(
+  private async pipeRemoteToDownlink(
     remoteSocket: Socket,
     retry: (() => Promise<boolean>) | null,
   ): Promise<void> {
@@ -288,12 +369,12 @@ export class TcpTransport {
 
             this.options.trafficTracker?.addDownlink(chunk.byteLength);
 
-            if (this.options.webSocket.readyState !== WS_READY_STATE.OPEN) {
-              controller.error('WebSocket is not open');
+            if (!this.options.downlink.isOpen()) {
+              controller.error('Downlink is not open');
               return;
             }
 
-            this.options.webSocket.send(chunk);
+            await this.options.downlink.send(chunk);
           },
           close: () => {
             this.options.log.debug(
@@ -316,12 +397,17 @@ export class TcpTransport {
       if (retried) {
         return;
       }
-      safeCloseWebSocket(this.options.webSocket);
+      this.fail(new Error('TCP retry failed after no incoming data'));
       return;
     }
 
     if (streamError || !hasIncomingData) {
-      safeCloseWebSocket(this.options.webSocket);
+      this.fail(streamError ?? new Error('TCP remote closed without incoming data'));
+      return;
+    }
+
+    if (this.options.closeDownlinkOnRemoteClose) {
+      this.options.downlink.close();
     }
   }
 }
