@@ -60,6 +60,7 @@ Client → Worker fetch() → WorkerApp
 - `SubrequestBudget`（`src/utils/subrequest-budget.ts`）管理 Cloudflare Workers 子请求限制（默认 48）
 - 日志级别通过 `LOG_LEVEL` 环境变量控制（OFF/ERROR/WARN/INFO/DEBUG），生产默认 WARN
 - Mux 协议使用 `subarray` 零拷贝，TCP 使用 8KB 分块写入
+- `public/` 下的 Remnawave GET 探活/状态占位文件是有意保留的，用于由 Cloudflare 静态资源直接响应并减少 Worker invocation；不要把这些 GET 占位当作冗余删除。需要动态统计、reset、写入或请求体处理的 Remnawave 端点必须走 Worker 路由，不能放进 `public/`。
 - `worker-configuration.d.ts` 是 `wrangler types` 自动生成文件，除非明确在做类型定义刷新，否则不要把它当成需要手工维护的业务文件，也不要因为其中的格式差异单独阻塞审查
 - 本地 Vitest / Miniflare 里出现的 `compatibility_date` 回退或兼容性日志，当前先视为环境告警；只有在实际功能回归或类型/测试失败时才需要优先处理
 

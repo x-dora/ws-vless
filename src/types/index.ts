@@ -19,6 +19,8 @@ export interface WorkerEnv extends Env {
   UUID_KV?: KVNamespace;
   /** D1 数据库绑定（可选，作为 L2 缓存，KV 优先） */
   UUID_D1?: D1Database;
+  /** D1 数据库绑定（可选，用于 Remnawave 兼容流量统计） */
+  TRAFFIC_D1?: D1Database;
 }
 
 // ============================================================================

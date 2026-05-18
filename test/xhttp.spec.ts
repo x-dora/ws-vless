@@ -4,6 +4,7 @@ import { RuntimeConfig } from '../src/config';
 import { createSingleUUIDValidator } from '../src/core/header';
 import { isXHttpStreamOneRequest, XHttpGateway } from '../src/handlers/xhttp';
 import { TrafficStatsService } from '../src/services/stats-reporter';
+import { TrafficStore } from '../src/services/traffic-store';
 import { AddressType, ProxyCommand, type WorkerEnv } from '../src/types';
 import { createSubrequestBudget } from '../src/utils/subrequest-budget';
 
@@ -35,6 +36,108 @@ interface DeferredSocket extends WritableMockSocket {
 interface ControlledReadableSocket extends WritableMockSocket {
   emitRemoteData(chunk: Uint8Array): void;
   closeRemoteReadable(): void;
+}
+
+interface D1CounterRow {
+  uuid: string;
+  inboundTag: string;
+  outboundTag: string;
+  uplink: number;
+  downlink: number;
+  updatedAt: number;
+}
+
+interface D1NodeCounterRow {
+  direction: 'inbound' | 'outbound';
+  tag: string;
+  uplink: number;
+  downlink: number;
+  updatedAt: number;
+}
+
+class FakeTrafficD1Database {
+  readonly rows = new Map<string, D1CounterRow>();
+  readonly nodeRows = new Map<string, D1NodeCounterRow>();
+
+  prepare(query: string): D1PreparedStatement {
+    return new FakeTrafficD1PreparedStatement(this, query) as unknown as D1PreparedStatement;
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const results: D1Result<T>[] = [];
+    for (const statement of statements) {
+      results.push(await statement.run<T>());
+    }
+    return results;
+  }
+}
+
+class FakeTrafficD1PreparedStatement {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly db: FakeTrafficD1Database,
+    private readonly query: string,
+  ) {}
+
+  bind(...values: unknown[]): FakeTrafficD1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    if (this.query.includes('INSERT INTO traffic_counters')) {
+      const [uuid, inboundTag, outboundTag, uplink, downlink, updatedAt] = this.values as [
+        string,
+        string,
+        string,
+        number,
+        number,
+        number,
+      ];
+      const key = `${uuid}:${inboundTag}:${outboundTag}`;
+      const current = this.db.rows.get(key);
+      this.db.rows.set(key, {
+        uuid,
+        inboundTag,
+        outboundTag,
+        uplink: (current?.uplink ?? 0) + uplink,
+        downlink: (current?.downlink ?? 0) + downlink,
+        updatedAt,
+      });
+    }
+
+    if (this.query.includes('INSERT INTO traffic_node_counters')) {
+      const [tag, uplink, downlink, updatedAt] = this.values as [string, number, number, number];
+      const direction = this.query.includes("VALUES ('inbound'") ? 'inbound' : 'outbound';
+      const key = `${direction}:${tag}`;
+      const current = this.db.nodeRows.get(key);
+      this.db.nodeRows.set(key, {
+        direction,
+        tag,
+        uplink: (current?.uplink ?? 0) + uplink,
+        downlink: (current?.downlink ?? 0) + downlink,
+        updatedAt,
+      });
+    }
+
+    return {
+      success: true,
+      meta: {},
+      results: [],
+    } as D1Result<T>;
+  }
+
+  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    const rows = this.query.includes('FROM traffic_node_counters')
+      ? this.db.nodeRows.values()
+      : this.db.rows.values();
+    return {
+      success: true,
+      meta: {},
+      results: Array.from(rows).filter((row) => row.uplink > 0 || row.downlink > 0) as T[],
+    } as D1Result<T>;
+  }
 }
 
 function uuidToBytes(uuid: string): number[] {
@@ -90,6 +193,29 @@ function createChunkedRequestBody(chunks: Uint8Array[]): ReadableStream<Uint8Arr
       controller.close();
     },
   });
+}
+
+function createDisconnectingRequestBody(): {
+  readable: ReadableStream<Uint8Array>;
+  enqueue: (chunk: Uint8Array) => void;
+  disconnect: () => void;
+} {
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  return {
+    readable: new ReadableStream<Uint8Array>({
+      start(nextController) {
+        streamController = nextController;
+      },
+    }),
+    enqueue(chunk: Uint8Array) {
+      streamController.enqueue(chunk);
+    },
+    disconnect() {
+      streamController.error(
+        new TypeError("Can't read from request stream because client disconnected."),
+      );
+    },
+  };
 }
 
 function createUdpPacket(payload: Uint8Array): Uint8Array {
@@ -242,7 +368,7 @@ function createDeferredSocket(): DeferredSocket {
   };
 }
 
-function createGateway() {
+function createGateway(trafficStatsService = new TrafficStatsService({ enabled: false })) {
   const config = new RuntimeConfig({
     DEV_MODE: 'true',
     UUID: TEST_UUID,
@@ -252,7 +378,7 @@ function createGateway() {
 
   return new XHttpGateway({
     config,
-    trafficStatsService: new TrafficStatsService({ enabled: false }),
+    trafficStatsService,
   });
 }
 
@@ -338,7 +464,8 @@ describe('XHTTP gateway', () => {
     await waitOnExecutionContext(ctx);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('Content-Type')).toContain('application/grpc');
+    expect(response.headers.get('Content-Type')).toContain('text/event-stream');
+    expect(response.headers.get('Cache-Control')).toBe('no-store, no-transform');
     expect(connectMock).toHaveBeenCalledWith({ hostname: 'target.example', port: 8443 });
     expect(socket.writes).toEqual([new Uint8Array([1, 2, 3])]);
     expect(body).toEqual(new Uint8Array([1, 0, 7, 8, 9]));
@@ -373,6 +500,275 @@ describe('XHTTP gateway', () => {
     await waitOnExecutionContext(ctx);
 
     expect(socket.writes).toEqual([firstPayload, nextPayload]);
+  });
+
+  it('reports complete xhttp TCP traffic once when the stream closes', async () => {
+    const statsReports: unknown[] = [];
+    const statsFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      statsReports.push(JSON.parse(String(init?.body)));
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', statsFetch);
+
+    const socket = createControlledReadableSocket();
+    connectMock.mockReturnValueOnce(socket);
+    const firstPayload = new Uint8Array([1, 2]);
+    const nextPayload = new Uint8Array([3, 4, 5]);
+    const remotePayload = new Uint8Array([9, 8, 7, 6]);
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc' },
+      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+    });
+    const ctx = createExecutionContext();
+
+    const response = await createGateway(
+      new TrafficStatsService({ endpoint: 'https://stats.example.test/worker/report' }),
+    ).handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    const bodyPromise = response.arrayBuffer();
+
+    socket.emitRemoteData(remotePayload);
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([firstPayload, nextPayload]);
+    });
+    socket.closeRemoteReadable();
+    await bodyPromise;
+    await waitOnExecutionContext(ctx);
+
+    expect(statsFetch).toHaveBeenCalledTimes(1);
+    expect(statsReports).toEqual([
+      {
+        uuid: TEST_UUID,
+        uplink: firstPayload.byteLength + nextPayload.byteLength,
+        downlink: remotePayload.byteLength,
+      },
+    ]);
+  });
+
+  it('reports final xhttp TCP traffic when the response stream is canceled', async () => {
+    const statsReports: unknown[] = [];
+    const statsEndpoint = 'https://stats.example.test/worker/report';
+    const statsFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === statsEndpoint) {
+        statsReports.push(JSON.parse(String(init?.body)));
+      }
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', statsFetch);
+
+    const socket = createControlledReadableSocket();
+    connectMock.mockReturnValueOnce(socket);
+    const firstPayload = new Uint8Array([1, 2]);
+    const nextPayload = new Uint8Array([3, 4, 5]);
+    const body = createDisconnectingRequestBody();
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc-web' },
+      body: body.readable,
+    });
+    const ctx = createExecutionContext();
+
+    const responsePromise = createGateway(
+      new TrafficStatsService({ endpoint: statsEndpoint }),
+    ).handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    body.enqueue(buildVlessHeader({ payload: firstPayload }));
+    const response = await responsePromise;
+    if (!response.body) {
+      throw new Error('Expected streaming response body');
+    }
+    const reader = response.body.getReader();
+    const bodyPump = (async () => {
+      while (true) {
+        const { done } = await reader.read();
+        if (done) {
+          return;
+        }
+      }
+    })().catch(() => {});
+    body.enqueue(nextPayload);
+
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([firstPayload, nextPayload]);
+    });
+
+    await reader.cancel('client canceled response');
+    body.disconnect();
+    await bodyPump;
+    await waitOnExecutionContext(ctx);
+
+    await vi.waitFor(() => {
+      expect(statsReports).toEqual([
+        {
+          uuid: TEST_UUID,
+          uplink: firstPayload.byteLength + nextPayload.byteLength,
+          downlink: 0,
+        },
+      ]);
+    });
+  });
+
+  it('reports final xhttp TCP traffic when the request body disconnects', async () => {
+    const statsReports: unknown[] = [];
+    const statsEndpoint = 'https://stats.example.test/worker/report';
+    const statsFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === statsEndpoint) {
+        statsReports.push(JSON.parse(String(init?.body)));
+      }
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', statsFetch);
+
+    const socket = createControlledReadableSocket();
+    connectMock.mockReturnValueOnce(socket);
+    const firstPayload = new Uint8Array([1, 2]);
+    const nextPayload = new Uint8Array([3, 4, 5]);
+    const body = createDisconnectingRequestBody();
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc-web' },
+      body: body.readable,
+    });
+    const ctx = createExecutionContext();
+
+    const responsePromise = createGateway(
+      new TrafficStatsService({ endpoint: statsEndpoint }),
+    ).handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    body.enqueue(buildVlessHeader({ payload: firstPayload }));
+    const response = await responsePromise;
+    const bodyPromise = response.arrayBuffer();
+    body.enqueue(nextPayload);
+
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([firstPayload, nextPayload]);
+    });
+    body.disconnect();
+    await bodyPromise;
+    await waitOnExecutionContext(ctx);
+
+    expect(statsReports).toEqual([
+      {
+        uuid: TEST_UUID,
+        uplink: firstPayload.byteLength + nextPayload.byteLength,
+        downlink: 0,
+      },
+    ]);
+  });
+
+  it('reports final xhttp TCP traffic when the request is aborted', async () => {
+    const statsReports: unknown[] = [];
+    const statsEndpoint = 'https://stats.example.test/worker/report';
+    const statsFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === statsEndpoint) {
+        statsReports.push(JSON.parse(String(init?.body)));
+      }
+      return new Response('ok');
+    });
+    vi.stubGlobal('fetch', statsFetch);
+
+    const socket = createControlledReadableSocket();
+    connectMock.mockReturnValueOnce(socket);
+    const firstPayload = new Uint8Array([1, 2]);
+    const nextPayload = new Uint8Array([3, 4, 5]);
+    const remotePayload = new Uint8Array([9, 8, 7, 6]);
+    const abortController = new AbortController();
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc-web' },
+      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+      signal: abortController.signal,
+    });
+    const ctx = createExecutionContext();
+
+    const response = await createGateway(
+      new TrafficStatsService({ endpoint: statsEndpoint }),
+    ).handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    const bodyPromise = response.arrayBuffer();
+
+    socket.emitRemoteData(remotePayload);
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([firstPayload, nextPayload]);
+    });
+    abortController.abort();
+    await bodyPromise;
+    await waitOnExecutionContext(ctx);
+
+    expect(statsReports).toEqual([
+      {
+        uuid: TEST_UUID,
+        uplink: firstPayload.byteLength + nextPayload.byteLength,
+        downlink: remotePayload.byteLength,
+      },
+    ]);
+  });
+
+  it('records complete xhttp TCP traffic to D1 when the stream closes', async () => {
+    const db = new FakeTrafficD1Database();
+    const socket = createControlledReadableSocket();
+    connectMock.mockReturnValueOnce(socket);
+    const firstPayload = new Uint8Array([1, 2]);
+    const nextPayload = new Uint8Array([3, 4, 5]);
+    const remotePayload = new Uint8Array([9, 8, 7, 6]);
+    const request = new Request('https://example.com/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc' },
+      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+    });
+    const ctx = createExecutionContext();
+
+    const response = await createGateway(
+      new TrafficStatsService({
+        trafficStore: new TrafficStore(db as unknown as D1Database),
+      }),
+    ).handle(
+      request,
+      { executionContext: ctx, budget: createSubrequestBudget(48) },
+      createSingleUUIDValidator(TEST_UUID),
+    );
+    const bodyPromise = response.arrayBuffer();
+
+    socket.emitRemoteData(remotePayload);
+    await vi.waitFor(() => {
+      expect(socket.writes).toEqual([firstPayload, nextPayload]);
+    });
+    socket.closeRemoteReadable();
+    await bodyPromise;
+    await waitOnExecutionContext(ctx);
+
+    expect(Array.from(db.rows.values())).toMatchObject([
+      {
+        uuid: TEST_UUID,
+        inboundTag: 'VLESS_XHTTP',
+        outboundTag: 'DIRECT',
+        uplink: firstPayload.byteLength + nextPayload.byteLength,
+        downlink: remotePayload.byteLength,
+      },
+    ]);
+    expect(Array.from(db.nodeRows.values())).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          direction: 'inbound',
+          tag: 'VLESS_XHTTP',
+          uplink: firstPayload.byteLength + nextPayload.byteLength,
+          downlink: remotePayload.byteLength,
+        }),
+      ]),
+    );
   });
 
   it('does not keep reading request body while the TCP writer is not ready', async () => {

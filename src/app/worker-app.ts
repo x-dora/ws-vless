@@ -8,6 +8,8 @@ import { createUUIDValidator } from '../core/header';
 import { WebSocketGateway } from '../handlers/connection';
 import { isXHttpStreamOneRequest, XHttpGateway } from '../handlers/xhttp';
 import { HttpRouter } from '../http/http-router';
+import { RemnawaveControlRouter } from '../http/remnawave-control-router';
+import { RemnawaveStatsRouter } from '../http/remnawave-stats-router';
 import type { WorkerEnv } from '../types';
 import { isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
 import { AppContext } from './app-context';
@@ -17,6 +19,8 @@ const appCache = new WeakMap<WorkerEnv, WorkerApp>();
 
 export class WorkerApp {
   private readonly httpRouter: HttpRouter;
+  private readonly remnawaveControlRouter: RemnawaveControlRouter;
+  private readonly remnawaveStatsRouter: RemnawaveStatsRouter;
   private readonly websocketGateway: WebSocketGateway;
   private readonly xhttpGateway: XHttpGateway;
 
@@ -24,6 +28,10 @@ export class WorkerApp {
     this.httpRouter = new HttpRouter({
       authService: this.context.authService,
       metrics: this.context.requestMetrics,
+    });
+    this.remnawaveControlRouter = new RemnawaveControlRouter();
+    this.remnawaveStatsRouter = new RemnawaveStatsRouter({
+      trafficStatsService: this.context.trafficStatsService,
     });
 
     this.websocketGateway = new WebSocketGateway({
@@ -56,8 +64,7 @@ export class WorkerApp {
         const validateUUID = createUUIDValidator(validUUIDs);
 
         const response = await this.websocketGateway.handle(request, scope, validateUUID);
-        this.context.requestMetrics.recordSuccess(response.status);
-        return response;
+        return this.recordRoutedResponse(response);
       }
 
       if (isXHttpStreamOneRequest(request)) {
@@ -66,12 +73,17 @@ export class WorkerApp {
         const validateUUID = createUUIDValidator(validUUIDs);
 
         const response = await this.xhttpGateway.handle(request, scope, validateUUID);
-        if (response.status >= 400) {
-          this.context.requestMetrics.recordError(response.status);
-        } else {
-          this.context.requestMetrics.recordSuccess(response.status);
-        }
-        return response;
+        return this.recordRoutedResponse(response);
+      }
+
+      if (this.remnawaveStatsRouter.canHandle(request)) {
+        const response = await this.remnawaveStatsRouter.handle(request, scope.budget);
+        return this.recordRoutedResponse(response);
+      }
+
+      if (this.remnawaveControlRouter.canHandle(request)) {
+        const response = await this.remnawaveControlRouter.handle(request);
+        return this.recordRoutedResponse(response);
       }
 
       const uuidManager = this.context.getUUIDManager();
@@ -87,6 +99,16 @@ export class WorkerApp {
         status: 500,
       });
     }
+  }
+
+  private recordRoutedResponse(response: Response): Response {
+    if (response.status >= 400) {
+      this.context.requestMetrics.recordError(response.status);
+      return response;
+    }
+
+    this.context.requestMetrics.recordSuccess(response.status);
+    return response;
   }
 }
 

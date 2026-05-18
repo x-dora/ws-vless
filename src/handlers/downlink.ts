@@ -31,10 +31,21 @@ export class WebSocketDownlinkSink implements DownlinkSink {
   }
 }
 
+interface StreamDownlinkSinkOptions {
+  onClose?: () => void;
+  onAbort?: (reason: unknown) => void;
+}
+
 export class StreamDownlinkSink implements DownlinkSink {
   private open = true;
+  readonly closed: Promise<void>;
 
-  constructor(private readonly writer: WritableStreamDefaultWriter<Uint8Array>) {}
+  constructor(
+    private readonly writer: WritableStreamDefaultWriter<Uint8Array>,
+    private readonly options: StreamDownlinkSinkOptions = {},
+  ) {
+    this.closed = writer.closed;
+  }
 
   async send(chunk: Uint8Array): Promise<void> {
     if (!this.open) {
@@ -45,11 +56,8 @@ export class StreamDownlinkSink implements DownlinkSink {
       await this.writer.write(chunk);
     } catch (error) {
       this.open = false;
-      try {
-        this.writer.releaseLock();
-      } catch {
-        // ignore
-      }
+      this.options.onAbort?.(error);
+      void this.abortWriter(error);
       throw error;
     }
   }
@@ -60,6 +68,7 @@ export class StreamDownlinkSink implements DownlinkSink {
     }
 
     this.open = false;
+    this.options.onClose?.();
     void this.writer
       .close()
       .catch(() => {
@@ -76,5 +85,19 @@ export class StreamDownlinkSink implements DownlinkSink {
 
   isOpen(): boolean {
     return this.open;
+  }
+
+  private async abortWriter(reason: unknown): Promise<void> {
+    try {
+      await this.writer.abort(reason);
+    } catch {
+      // ignore
+    } finally {
+      try {
+        this.writer.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
   }
 }

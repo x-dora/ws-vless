@@ -63,6 +63,7 @@ describe('AppContext', () => {
       MAX_SUBREQUESTS: undefined,
       UUID_KV: undefined,
       UUID_D1: undefined,
+      TRAFFIC_D1: undefined,
     } as WorkerEnv;
   });
 
@@ -132,5 +133,28 @@ describe('AppContext', () => {
 
     // Should return the same instance
     expect(manager1).toBe(manager2);
+  });
+
+  it('uses D1 traffic store without external stats endpoint when both are configured', async () => {
+    const record = vi.fn(async () => true);
+    env.TRAFFIC_D1 = {
+      prepare: vi.fn(),
+      batch: vi.fn(),
+    } as unknown as D1Database;
+    const context = new AppContext(env);
+    vi.spyOn(context.trafficStore, 'isAvailable', 'get').mockReturnValue(true);
+    vi.spyOn(context.trafficStore, 'record').mockImplementation(record);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await context.trafficStatsService.report({
+      uuid: 'd342d11e-d424-4583-b36e-524ab1f0afa4',
+      uplink: 100,
+      downlink: 200,
+      type: 'xhttp',
+    });
+
+    expect(record).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

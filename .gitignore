@@ -167,3 +167,6 @@ dist
 .wrangler/
 stats_data.json
 __pycache__/
+public/
+!public/
+!public/**

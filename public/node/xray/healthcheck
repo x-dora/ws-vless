@@ -1,0 +1,8 @@
+{
+  "response": {
+    "isAlive": true,
+    "xrayInternalStatusCached": true,
+    "xrayVersion": "25.3.6",
+    "nodeVersion": "2.7.0"
+  }
+}

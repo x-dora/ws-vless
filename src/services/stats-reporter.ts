@@ -11,11 +11,12 @@ import {
   isSubrequestBudgetExceededError,
   type SubrequestBudget,
 } from '../utils/subrequest-budget';
+import type { TrafficStore } from './traffic-store';
 
 const log = createLogger('Traffic');
 const FAILURE_WARN_INTERVAL_MS = 60_000;
 
-export type TrafficType = 'tcp' | 'udp' | 'mux';
+export type TrafficType = 'tcp' | 'udp' | 'mux' | 'xhttp';
 
 export interface TrafficStats {
   uuid: string;
@@ -24,6 +25,7 @@ export interface TrafficStats {
   duration?: number;
   target?: string;
   type?: TrafficType;
+  outboundTag?: string;
 }
 
 export interface TrafficStatsServiceOptions {
@@ -31,6 +33,7 @@ export interface TrafficStatsServiceOptions {
   authToken?: string;
   timeout?: number;
   enabled?: boolean;
+  trafficStore?: TrafficStore;
 }
 
 export class TrafficTracker {
@@ -82,6 +85,7 @@ export class TrafficStatsService {
   private readonly authToken?: string;
   private readonly timeout: number;
   private readonly enabled: boolean;
+  private readonly trafficStore?: TrafficStore;
   private lastFailureWarnAt = 0;
 
   constructor(options: TrafficStatsServiceOptions = {}) {
@@ -89,10 +93,11 @@ export class TrafficStatsService {
     this.authToken = options.authToken;
     this.timeout = options.timeout ?? 5000;
     this.enabled = options.enabled ?? true;
+    this.trafficStore = options.trafficStore;
   }
 
   get isEnabled(): boolean {
-    return this.enabled && Boolean(this.endpoint);
+    return this.enabled && (Boolean(this.endpoint) || Boolean(this.trafficStore?.isAvailable));
   }
 
   createTracker(uuid: string, target?: string, type?: TrafficType): TrafficTracker {
@@ -108,12 +113,14 @@ export class TrafficStatsService {
       return true;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const stored = await this.reportToStore(stats, budget);
     const endpoint = this.endpoint;
     if (!endpoint) {
-      return true;
+      return stored;
     }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
       const headers: Record<string, string> = {
@@ -144,7 +151,7 @@ export class TrafficStatsService {
         log.debug(
           `reported ${stats.uuid} ↑${formatBytes(stats.uplink)} ↓${formatBytes(stats.downlink)}`,
         );
-        return true;
+        return stored;
       }
 
       this.logReportFailure(`traffic report failed: ${response.status} ${response.statusText}`);
@@ -181,9 +188,11 @@ export class TrafficStatsService {
       return true;
     }
 
+    const stored = await this.reportBatchToStore(validStats, budget);
+
     const endpoint = this.endpoint;
     if (!endpoint) {
-      return true;
+      return stored;
     }
 
     const batchEndpoint = endpoint.replace('/worker/report', '/worker/batch-report');
@@ -214,7 +223,7 @@ export class TrafficStatsService {
         'traffic batch report',
       );
 
-      return response.ok;
+      return response.ok && stored;
     } catch (error) {
       if (isSubrequestBudgetExceededError(error)) {
         log.warn(`batch traffic report skipped: ${error.message}`);
@@ -224,6 +233,54 @@ export class TrafficStatsService {
       log.warn('batch traffic report error:', error);
       return false;
     }
+  }
+
+  async getUsersStats(reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getUsersStats(reset, budget);
+  }
+
+  async getCombinedStats(reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getCombinedStats(reset, budget);
+  }
+
+  async getInboundStats(tag: string | undefined, reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getInboundStats(tag, reset, budget);
+  }
+
+  async getOutboundStats(tag: string | undefined, reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getOutboundStats(tag, reset, budget);
+  }
+
+  async getAllInboundStats(reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getAllInboundStats(reset, budget);
+  }
+
+  async getAllOutboundStats(reset: boolean, budget?: SubrequestBudget) {
+    return await this.trafficStore?.getAllOutboundStats(reset, budget);
+  }
+
+  private async reportToStore(stats: TrafficStats, budget?: SubrequestBudget): Promise<boolean> {
+    if (!this.trafficStore?.isAvailable) {
+      return true;
+    }
+
+    return await this.trafficStore.record(stats, budget);
+  }
+
+  private async reportBatchToStore(
+    stats: TrafficStats[],
+    budget?: SubrequestBudget,
+  ): Promise<boolean> {
+    const store = this.trafficStore;
+    if (!store?.isAvailable) {
+      return true;
+    }
+
+    let allStored = true;
+    for (const item of stats) {
+      allStored = (await store.record(item, budget)) && allStored;
+    }
+    return allStored;
   }
 
   private logReportFailure(message: string, error?: unknown): void {

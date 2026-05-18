@@ -1,0 +1,11 @@
+{
+  "response": {
+    "isStarted": true,
+    "version": "worker-static",
+    "error": null,
+    "systemInformation": null,
+    "nodeInformation": {
+      "version": "worker-static"
+    }
+  }
+}

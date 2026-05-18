@@ -13,6 +13,7 @@ import {
 } from '../providers';
 import { RequestMetricsService } from '../services/request-metrics';
 import { TrafficStatsService } from '../services/stats-reporter';
+import { TrafficStore } from '../services/traffic-store';
 import type { WorkerEnv } from '../types';
 import { createLogger, initLogger } from '../utils/logger';
 import { createSubrequestBudget, type SubrequestBudget } from '../utils/subrequest-budget';
@@ -24,6 +25,7 @@ export class AppContext {
   readonly authService: AuthService;
   readonly requestMetrics = new RequestMetricsService();
   readonly trafficStatsService: TrafficStatsService;
+  readonly trafficStore: TrafficStore;
   private readonly uuidManager: UUIDProviderManager;
 
   constructor(private readonly env: WorkerEnv) {
@@ -32,10 +34,13 @@ export class AppContext {
     initLogger(devMode, env.LOG_LEVEL);
 
     this.authService = new AuthService(env.API_KEY);
+    this.trafficStore = new TrafficStore(env.TRAFFIC_D1);
+    const useTrafficStore = this.trafficStore.isAvailable;
     this.trafficStatsService = new TrafficStatsService({
-      endpoint: env.STATS_REPORT_URL,
+      endpoint: useTrafficStore ? undefined : env.STATS_REPORT_URL,
       authToken: env.STATS_REPORT_TOKEN,
-      enabled: Boolean(env.STATS_REPORT_URL),
+      enabled: Boolean(useTrafficStore || env.STATS_REPORT_URL),
+      trafficStore: this.trafficStore,
     });
 
     this.uuidManager = this.createUUIDManager();

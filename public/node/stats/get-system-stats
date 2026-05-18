@@ -1,0 +1,30 @@
+{
+  "response": {
+    "xrayInfo": {
+      "numGoroutine": 1,
+      "numGC": 0,
+      "alloc": 0,
+      "totalAlloc": 0,
+      "sys": 0,
+      "mallocs": 0,
+      "frees": 0,
+      "liveObjects": 0,
+      "pauseTotalNs": 0,
+      "uptime": 1
+    },
+    "plugins": {
+      "torrentBlocker": {
+        "reportsCount": 0
+      }
+    },
+    "system": {
+      "stats": {
+        "memoryFree": 0,
+        "memoryUsed": 0,
+        "uptime": 1,
+        "loadAvg": [0, 0, 0],
+        "interface": null
+      }
+    }
+  }
+}

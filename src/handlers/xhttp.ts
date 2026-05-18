@@ -28,10 +28,11 @@ type WorkerBytes = Uint8Array<ArrayBufferLike>;
 
 const MAX_XHTTP_HEADER_BYTES = 4096;
 const XHTTP_RESPONSE_HEADERS = {
-  'Content-Type': 'application/grpc',
-  'Cache-Control': 'no-store',
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-store, no-transform',
   'X-Accel-Buffering': 'no',
 };
+const XHTTP_UPLINK_STALL_LOG_MS = 25_000;
 
 interface XHttpGatewayOptions {
   config: RuntimeConfig;
@@ -119,9 +120,20 @@ class XHttpConnectionSession {
   private trafficTracker: TrafficTracker | null = null;
   private tcpTransport: TcpTransport | null = null;
   private udpTransport: UdpDnsTransport | null = null;
+  private downlink: StreamDownlinkSink | null = null;
   private readerLocked = false;
   private cancelingReader = false;
   private finalized = false;
+  private finalizePromise: Promise<void> | null = null;
+  private startedAt = Date.now();
+  private lastUplinkReadAt = 0;
+  private lastTcpWriteAt = 0;
+  private uplinkBytes = 0;
+  private uplinkStallTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly abortListener = () => {
+    this.log.debug('XHTTP request aborted');
+    void this.finalize('request-abort');
+  };
 
   constructor(options: SessionOptions) {
     this.request = options.request;
@@ -139,6 +151,7 @@ class XHttpConnectionSession {
     }
 
     this.reader = this.request.body.getReader();
+    this.request.signal.addEventListener('abort', this.abortListener, { once: true });
 
     let parsed: ParsedInitialHeader;
     try {
@@ -168,36 +181,32 @@ class XHttpConnectionSession {
       parsed.header.protocolVersion ?? new Uint8Array([0]),
     );
 
-    const readable = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        const { readable: downlinkReadable, writable } = new TransformStream<
-          Uint8Array,
-          Uint8Array
-        >();
-        const downlink = new StreamDownlinkSink(writable.getWriter());
-        const forwardDownlink = downlinkReadable.pipeTo(
-          new WritableStream<Uint8Array>({
-            write: (chunk) => {
-              controller.enqueue(chunk);
-            },
-            close: () => {
-              controller.close();
-              this.finalize();
-            },
-            abort: (reason) => {
-              controller.error(reason);
-              this.finalize();
-            },
-          }),
-        );
-
-        this.createTransport(parsed.header, parsed.rawClientData, responseHeader, downlink);
-        void this.runTunnel(forwardDownlink);
+    const { readable, writable } = new IdentityTransformStream();
+    const downlink = new StreamDownlinkSink(writable.getWriter(), {
+      onClose: () => {
+        void this.finalize('downlink-close');
       },
-      cancel: () => {
-        this.finalize();
+      onAbort: (error) => {
+        this.log.debug('XHTTP downlink aborted', String(error));
+        void this.finalize('downlink-abort');
       },
     });
+    this.downlink = downlink;
+    const forwardDownlink = downlink.closed.then(
+      () => this.finalize('downlink-close'),
+      (error) => {
+        if (isExpectedTunnelClose(error)) {
+          this.log.debug('XHTTP downlink closed');
+        } else {
+          this.log.error('XHTTP downlink error', String(error));
+        }
+        return this.finalize('downlink-abort');
+      },
+    );
+
+    this.createTransport(parsed.header, parsed.rawClientData, responseHeader, downlink);
+    this.startUplinkStallProbe();
+    void this.runTunnel(forwardDownlink);
 
     return new Response(readable, {
       status: 200,
@@ -259,7 +268,7 @@ class XHttpConnectionSession {
       this.trafficTracker = this.trafficStatsService.createTracker(
         result.userUUID,
         `${result.addressRemote}:${result.portRemote}`,
-        connectionType,
+        'xhttp',
       );
     }
 
@@ -328,7 +337,7 @@ class XHttpConnectionSession {
     if (rawClientData.length > 0) {
       void this.udpTransport.write(rawClientData).catch((error) => {
         this.log.error('XHTTP UDP initial payload error', String(error));
-        this.finalize();
+        void this.finalize('udp-initial-error');
       });
     }
   }
@@ -353,13 +362,13 @@ class XHttpConnectionSession {
     } catch (error) {
       if (isSubrequestBudgetExceededError(error)) {
         this.log.warn(`Subrequest budget exhausted: ${this.scope.budget.describe()}`);
-      } else if (isClosedWritableStreamError(error)) {
+      } else if (isExpectedTunnelClose(error)) {
         this.log.debug('XHTTP stream closed during tunnel forwarding');
       } else {
         this.log.error('XHTTP tunnel error', String(error));
       }
     } finally {
-      this.finalize();
+      await this.finalize('run-tunnel-finally');
     }
   }
 
@@ -387,14 +396,20 @@ class XHttpConnectionSession {
         }
 
         if (value.byteLength > 0) {
+          this.lastUplinkReadAt = Date.now();
+          this.uplinkBytes += value.byteLength;
           await this.sendClientChunk(value);
         }
       }
     } catch (error) {
-      if (this.cancelingReader || isClosedWritableStreamError(error)) {
+      if (this.cancelingReader) {
         this.log.debug('XHTTP upstream reader closed');
+      } else if (isExpectedRequestBodyClose(error)) {
+        this.log.debug('XHTTP request body closed', String(error));
+        void this.finalize('request-body-closed');
       } else {
         this.log.error('XHTTP request body read error', String(error));
+        void this.finalize('request-body-error');
       }
     } finally {
       this.readerLocked = false;
@@ -410,11 +425,12 @@ class XHttpConnectionSession {
     }
 
     await this.tcpTransport?.send(chunk);
+    this.lastTcpWriteAt = Date.now();
   }
 
   private rejectAndReleaseReader(): void {
     this.releaseReader();
-    this.finalize();
+    void this.finalize('request-rejected');
   }
 
   private releaseReader(): void {
@@ -441,39 +457,114 @@ class XHttpConnectionSession {
     });
   }
 
-  private finalize(): void {
-    if (this.finalized) {
-      return;
+  private finalize(reason: string): Promise<void> {
+    if (this.finalizePromise) {
+      return this.finalizePromise;
     }
     this.finalized = true;
 
+    this.finalizePromise = this.reportFinalTraffic(reason);
+
     this.tcpTransport?.close();
     this.udpTransport?.close();
+    this.downlink?.close();
     this.cancelRequestReader();
+    this.stopUplinkStallProbe();
+    this.request.signal.removeEventListener('abort', this.abortListener);
 
-    if (this.trafficTracker) {
-      const stats = this.trafficTracker.getStats();
-      this.log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink}`);
+    return this.finalizePromise;
+  }
 
-      if (!this.trafficTracker.isReported() && this.trafficTracker.hasTraffic()) {
-        this.trafficTracker.markReported();
-        const reportPromise = this.trafficStatsService
-          .report(stats, this.scope.budget)
-          .then((ok) => {
-            if (ok) {
-              this.log.debug('Stats reported');
-            }
-          })
-          .catch((error) => {
-            this.log.error(`Stats report error: ${String(error)}`);
-          });
+  private startUplinkStallProbe(): void {
+    this.startedAt = Date.now();
+    this.lastUplinkReadAt = this.startedAt;
+    this.lastTcpWriteAt = this.startedAt;
 
-        this.scope.executionContext.waitUntil(reportPromise);
+    this.uplinkStallTimer = setInterval(() => {
+      if (this.finalized) {
+        this.stopUplinkStallProbe();
+        return;
       }
+
+      const now = Date.now();
+      this.log.debug(
+        `XHTTP uplink still open: age=${now - this.startedAt}ms, ` +
+          `lastRead=${now - this.lastUplinkReadAt}ms, ` +
+          `lastTcpWrite=${now - this.lastTcpWriteAt}ms, uplinkBytes=${this.uplinkBytes}`,
+      );
+    }, XHTTP_UPLINK_STALL_LOG_MS);
+  }
+
+  private stopUplinkStallProbe(): void {
+    if (this.uplinkStallTimer === null) {
+      return;
     }
+
+    clearInterval(this.uplinkStallTimer);
+    this.uplinkStallTimer = null;
+  }
+
+  private reportFinalTraffic(reason: string): Promise<void> {
+    const tracker = this.trafficTracker;
+    if (!tracker) {
+      this.log.debug(`XHTTP final report skipped (${reason}): no traffic tracker`);
+      return Promise.resolve();
+    }
+
+    const stats = tracker.getStats();
+    this.log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink} (${reason})`);
+
+    if (tracker.isReported()) {
+      this.log.debug(`XHTTP final report skipped (${reason}): already reported`);
+      return Promise.resolve();
+    }
+
+    if (!tracker.hasTraffic()) {
+      this.log.debug(`XHTTP final report skipped (${reason}): no traffic`);
+      return Promise.resolve();
+    }
+
+    tracker.markReported();
+    const reportPromise = this.trafficStatsService
+      .report(stats, this.scope.budget)
+      .then((ok) => {
+        if (ok) {
+          this.log.debug(`Stats reported (${reason})`);
+        } else {
+          this.log.warn(`Stats report returned false (${reason})`);
+        }
+      })
+      .catch((error) => {
+        this.log.error(`Stats report error (${reason}): ${String(error)}`);
+      });
+
+    this.scope.executionContext.waitUntil(reportPromise);
+    return reportPromise;
   }
 
   private badRequest(message: string): Response {
     return new Response(message, { status: 400 });
   }
+}
+
+function isExpectedRequestBodyClose(error: unknown): boolean {
+  if (isClosedWritableStreamError(error)) {
+    return true;
+  }
+
+  return (
+    error instanceof TypeError &&
+    /request stream.*client disconnected|client disconnected/i.test(error.message)
+  );
+}
+
+function isExpectedTunnelClose(error: unknown): boolean {
+  if (isClosedWritableStreamError(error)) {
+    return true;
+  }
+
+  return (
+    error instanceof TypeError &&
+    /readablestream.*closed|closed.*readablestream/i.test(error.message)
+  );
 }

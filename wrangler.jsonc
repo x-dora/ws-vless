@@ -31,7 +31,7 @@
   "main": "src/index.ts",
   // 兼容性日期
   "compatibility_date": "2026-03-17",
-  "compatibility_flags": [],
+  "compatibility_flags": ["enable_request_signal"],
   // 可观测性配置
   "observability": {
     "enabled": true,
@@ -41,6 +41,38 @@
     "logs": {
       "enabled": true
     }
+  },
+  "assets": {
+    "directory": "./public/",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": [
+      "/",
+      "/ws*",
+      "/x*",
+      "/api/*",
+      "/node/xray/start",
+      "/node/xray/stop",
+      "/node/handler/add-user",
+      "/node/handler/add-users",
+      "/node/handler/remove-user",
+      "/node/handler/remove-users",
+      "/node/handler/drop-users-connections",
+      "/node/handler/drop-ips",
+      "/node/handler/get-inbound-users-count",
+      "/node/handler/get-inbound-users",
+      "/node/plugin/sync",
+      "/node/plugin/torrent-blocker/collect",
+      "/node/plugin/nftables/block-ips",
+      "/node/plugin/nftables/unblock-ips",
+      "/node/plugin/nftables/recreate-tables",
+      "/node/stats/get-users-stats",
+      "/node/stats/get-combined-stats",
+      "/node/stats/get-inbound-stats",
+      "/node/stats/get-outbound-stats",
+      "/node/stats/get-all-inbounds-stats",
+      "/node/stats/get-all-outbounds-stats"
+    ]
   },
   "keep_vars": true,
   "workers_dev": true,

@@ -113,6 +113,12 @@ wss://your-worker.workers.dev/?PROXY_IP=198.51.100.8&NAT64_PREFIXES=64:ff9b::,26
 | `GET /api/uuids/refresh` | 强制刷新 UUID 缓存 |
 | `GET /api/stats` | 获取提供者统计信息 |
 
+## Remnawave 静态占位
+
+`public/` 目录下的 Remnawave GET 探活和状态响应是有意保留的，用于让 Cloudflare 静态资源直接返回低价值轮询结果，减少 Worker invocation 数。典型路径包括 `/health`、`/node/xray/healthcheck`、`/node/xray/status`、`/node/stats/get-system-stats` 等。
+
+需要动态统计、reset、写入或请求体处理的 Remnawave 端点必须走 Worker 路由，不要放进 `public/`。例如 `/node/stats/*` 的 POST 统计接口由 Worker 读取 D1 计数并处理 reset，不能用静态占位替代。
+
 ## 架构
 
 ```
