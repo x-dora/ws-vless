@@ -116,18 +116,15 @@ export class RuntimeConfig {
 // 配置工厂
 // ============================================================================
 
-let cachedConfig: RuntimeConfig | null = null;
-
 /**
  * 获取运行时配置
  * @param env Worker 环境变量
  * @returns RuntimeConfig 实例
  */
 export function getConfig(env: WorkerEnv): RuntimeConfig {
-  // 每次请求都重新创建配置，以支持动态环境变量
-  cachedConfig = new RuntimeConfig(env);
-  cachedConfig.validate();
-  return cachedConfig;
+  const config = new RuntimeConfig(env);
+  config.validate();
+  return config;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {

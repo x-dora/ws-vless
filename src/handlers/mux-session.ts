@@ -18,7 +18,6 @@ import {
   type MuxFrame,
   MuxNetwork,
   MuxStatus,
-  parseMuxFrame,
   type SubConnection,
 } from '../core/mux';
 import type { ConnLogFunction } from '../types';
@@ -32,6 +31,9 @@ import {
   isSubrequestBudgetExceededError,
   type SubrequestBudget,
 } from '../utils/subrequest-budget';
+import { splitIntoChunks } from './chunking';
+import { MuxFrameStream } from './mux-frame-stream';
+import { QueuedWebSocketDownlink } from './queued-downlink';
 
 // ============================================================================
 // 常量配置
@@ -47,11 +49,6 @@ const MAX_SUBREQUESTS = 48;
  * 最大数据块大小（参考 Xray 的 8KB）
  */
 const MAX_CHUNK_SIZE = 8 * 1024;
-
-/**
- * 写入队列最大长度
- */
-const MAX_WRITE_QUEUE = 100;
 
 /**
  * 连接超时时间（毫秒）
@@ -79,109 +76,6 @@ function createTimeoutPromise(ms: number): Promise<never> {
     }
   });
 }
-
-/**
- * 将数据分割成指定大小的块（零拷贝版本）
- * 使用 subarray 返回原数组的视图，避免数据拷贝
- */
-function* splitIntoChunks(data: Uint8Array, chunkSize: number): Generator<Uint8Array> {
-  let offset = 0;
-  while (offset < data.length) {
-    const end = Math.min(offset + chunkSize, data.length);
-    yield data.subarray(offset, end);
-    offset = end;
-  }
-}
-
-// ============================================================================
-// 写入队列（参考 Xray 的 Writer 设计）
-// ============================================================================
-
-/**
- * WebSocket 写入队列（优化版）
- * 确保帧按顺序发送，避免并发写入问题
- *
- * 优化：使用索引代替 shift()，避免数组元素移动开销
- */
-class WriteQueue {
-  private queue: Uint8Array[] = [];
-  private head = 0; // 队列头索引
-  private processing = false;
-  private webSocket: WebSocket;
-  private responseHeader: Uint8Array;
-  private headerSent = false;
-
-  constructor(webSocket: WebSocket, responseHeader: Uint8Array) {
-    this.webSocket = webSocket;
-    this.responseHeader = responseHeader;
-  }
-
-  /**
-   * 将数据加入发送队列
-   */
-  enqueue(data: Uint8Array): boolean {
-    const effectiveLength = this.queue.length - this.head;
-    if (effectiveLength >= MAX_WRITE_QUEUE) {
-      return false; // 队列满了
-    }
-    this.queue.push(data);
-    this.processQueue();
-    return true;
-  }
-
-  /**
-   * 处理发送队列
-   */
-  private processQueue(): void {
-    if (this.processing || this.head >= this.queue.length) {
-      return;
-    }
-
-    if (this.webSocket.readyState !== WS_READY_STATE.OPEN) {
-      this.queue = [];
-      this.head = 0;
-      return;
-    }
-
-    this.processing = true;
-
-    while (this.head < this.queue.length) {
-      const data = this.queue[this.head++];
-
-      try {
-        if (!this.headerSent) {
-          // 第一次发送需要附加响应头
-          const combined = new Uint8Array(this.responseHeader.length + data.length);
-          combined.set(this.responseHeader);
-          combined.set(data, this.responseHeader.length);
-          this.webSocket.send(combined);
-          this.headerSent = true;
-        } else {
-          this.webSocket.send(data);
-        }
-      } catch {
-        // 发送失败，停止处理
-        break;
-      }
-    }
-
-    // 定期压缩队列，避免内存泄漏
-    if (this.head > 64 && this.head >= this.queue.length) {
-      this.queue = [];
-      this.head = 0;
-    }
-
-    this.processing = false;
-  }
-
-  get isHeaderSent(): boolean {
-    return this.headerSent;
-  }
-}
-
-// ============================================================================
-// 会话统计（参考 Xray 的 SessionManager）
-// ============================================================================
 
 /**
  * 会话统计信息
@@ -246,7 +140,7 @@ export class MuxSession {
 
   // WebSocket 相关
   private webSocket: WebSocket;
-  private writeQueue: WriteQueue;
+  private downlink: QueuedWebSocketDownlink;
   private log: ConnLogFunction;
 
   // 配置
@@ -255,8 +149,8 @@ export class MuxSession {
   private timeout: number;
   private budget: SubrequestBudget;
 
-  // 缓冲区
-  private buffer: Uint8Array = new Uint8Array(0);
+  // Mux 帧流解析
+  private frameStream: MuxFrameStream;
 
   // 统计信息
   private stats: SessionStats;
@@ -266,8 +160,11 @@ export class MuxSession {
 
   constructor(options: MuxSessionOptions) {
     this.webSocket = options.webSocket;
-    this.writeQueue = new WriteQueue(options.webSocket, options.responseHeader);
+    this.downlink = new QueuedWebSocketDownlink(options.webSocket, {
+      responseHeader: options.responseHeader,
+    });
     this.log = options.log;
+    this.frameStream = new MuxFrameStream(this.log);
     this.retryOptions = options.retryOptions;
     this.dnsServer = options.dnsServer || DEFAULT_DNS_SERVER;
     this.timeout = options.timeout || 300000;
@@ -291,77 +188,16 @@ export class MuxSession {
   // 数据处理（零拷贝优化版）
   // ==========================================================================
 
-  /**
-   * 处理传入的 Mux 数据
-   *
-   * 优化策略：
-   * 1. 如果没有缓冲数据，直接在原数组上解析，避免任何拷贝
-   * 2. 只在必要时（有未完整帧）才进行缓冲区合并
-   * 3. 使用 parseMuxFrame 的 offset 参数避免 slice
-   */
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: streaming parser needs explicit partial-frame and recovery branches
   async processData(data: ArrayBuffer | ArrayBufferLike | Uint8Array): Promise<void> {
     if (this.closed) {
       return;
     }
 
     const incoming = data instanceof Uint8Array ? data : new Uint8Array(data);
-
     this.stats.bytesReceived += incoming.byteLength;
     this.stats.lastActivityTime = Date.now();
 
-    // 优化：如果没有缓冲数据，直接在 incoming 上解析
-    let bytes: Uint8Array;
-    if (this.buffer.length === 0) {
-      bytes = incoming;
-    } else {
-      // 只在必要时合并缓冲区
-      bytes = new Uint8Array(this.buffer.length + incoming.length);
-      bytes.set(this.buffer, 0);
-      bytes.set(incoming, this.buffer.length);
-      this.buffer = new Uint8Array(0); // 清空旧缓冲区
-    }
-
-    // 解析帧 - 直接在原数组上使用 offset，避免 slice
-    let offset = 0;
-    const totalLength = bytes.length;
-    const frames: MuxFrame[] = [];
-    let maxIterations = 1000;
-
-    while (offset < totalLength && maxIterations-- > 0) {
-      const remainingLength = totalLength - offset;
-      if (remainingLength < 2) {
-        break;
-      }
-
-      // 直接传入 offset，避免创建新数组
-      const result = parseMuxFrame(bytes, offset, remainingLength);
-
-      if (result.hasError) {
-        if (result.message?.includes('Incomplete') || result.message?.includes('too short')) {
-          break;
-        }
-        this.log.warn(`Mux parse error: ${result.message}`);
-        break;
-      }
-
-      const { frame } = result;
-      if (frame.frameLength <= 0) {
-        this.log.warn(`Mux invalid frameLength: ${frame.frameLength}`);
-        break;
-      }
-
-      frames.push(frame);
-      offset += frame.frameLength;
-    }
-
-    // 保留未处理的数据（只在有剩余时才拷贝）
-    if (offset < totalLength) {
-      this.buffer = bytes.slice(offset);
-    }
-
-    // 处理所有帧
-    for (const frame of frames) {
+    for (const frame of this.frameStream.push(incoming)) {
       this.handleFrame(frame).catch((err) => {
         this.log.error(`Mux handleFrame error: ${err}`);
       });
@@ -920,7 +756,7 @@ export class MuxSession {
 
     const frame = buildMuxKeepFrame(id, data);
     this.stats.bytesSent += frame.length;
-    this.writeQueue.enqueue(frame);
+    this.downlink.enqueue(frame);
   }
 
   private sendEndFrame(id: number): void {
@@ -929,7 +765,7 @@ export class MuxSession {
     }
 
     const frame = buildMuxEndFrame(id);
-    this.writeQueue.enqueue(frame);
+    this.downlink.enqueue(frame);
   }
 
   /**
@@ -941,7 +777,7 @@ export class MuxSession {
     }
 
     const frame = buildMuxKeepAliveFrame();
-    this.writeQueue.enqueue(frame);
+    this.downlink.enqueue(frame);
   }
 
   // ==========================================================================
@@ -962,6 +798,8 @@ export class MuxSession {
     }
     this.connections.clear();
     this.endedSessions.clear();
+    this.downlink.clear();
+    this.frameStream.clear();
     this.stats.activeConnections = 0;
 
     safeCloseWebSocket(this.webSocket);
