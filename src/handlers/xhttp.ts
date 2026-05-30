@@ -7,20 +7,16 @@
 
 import type { RequestScope } from '../app/types';
 import type { RuntimeConfig } from '../config';
-import { resolveRetryOverrides } from '../config/request-overrides';
-import {
-  BUFFER_TOO_SHORT_MESSAGE,
-  createResponseHeader,
-  processHeader,
-  type UUIDValidator,
-} from '../core/header';
+import { createResponseHeader, type UUIDValidator } from '../core/header';
 import type { TrafficStatsService, TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction, HeaderResult } from '../types';
 import { isClosedWritableStreamError } from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
 import type { OutboundRetryOptions } from '../utils/nat64';
-import { createBudgetedFetcher, isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
+import { isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
 import { StreamDownlinkSink } from './downlink';
+import { InitialHeaderParser } from './initial-header';
+import { createTunnelRetryOptions } from './retry-options';
 import { TcpTransport } from './tcp';
 import { UdpDnsTransport } from './udp';
 
@@ -79,25 +75,13 @@ export class XHttpGateway {
     scope: RequestScope,
     validateUUID: UUIDValidator,
   ): Promise<Response> {
-    const url = new URL(request.url);
-    const retryOverrides = resolveRetryOverrides(url.searchParams, {
-      proxyIP: this.options.config.proxyIP,
-      nat64Prefixes: this.options.config.nat64Prefixes,
-    });
-    const retryOptions: OutboundRetryOptions = {
-      proxyIP: retryOverrides.proxyIP,
-      nat64Prefixes: retryOverrides.nat64Prefixes,
-      resolverURL: this.options.config.nat64ResolverURL,
-      fetcher: createBudgetedFetcher(scope.budget, 'nat64 resolver fetch'),
-    };
-
     const session = new XHttpConnectionSession({
       request,
       validateUUID,
       scope,
       config: this.options.config,
       trafficStatsService: this.options.trafficStatsService,
-      retryOptions,
+      retryOptions: createTunnelRetryOptions(request, this.options.config, scope.budget),
     });
 
     return await session.start();
@@ -112,9 +96,9 @@ class XHttpConnectionSession {
   private readonly trafficStatsService: TrafficStatsService;
   private readonly retryOptions: OutboundRetryOptions;
   private readonly log: ConnLogFunction;
+  private readonly initialParser: InitialHeaderParser;
 
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  private headerBuffer: WorkerBytes = new Uint8Array(0) as WorkerBytes;
   private address = '';
   private portWithRandomLog = '';
   private trafficTracker: TrafficTracker | null = null;
@@ -143,6 +127,10 @@ class XHttpConnectionSession {
     this.trafficStatsService = options.trafficStatsService;
     this.retryOptions = options.retryOptions;
     this.log = createConnLog(() => `${this.address}:${this.portWithRandomLog}`);
+    this.initialParser = new InitialHeaderParser(this.validateUUID, {
+      maxHeaderBytes: MAX_XHTTP_HEADER_BYTES,
+      headerTooLargeMessage: 'VLESS header exceeds limit',
+    });
   }
 
   async start(): Promise<Response> {
@@ -225,44 +213,26 @@ class XHttpConnectionSession {
         throw new Error('Incomplete VLESS header');
       }
 
-      this.appendHeaderChunk(value);
-
-      const result = this.parseBufferedHeader();
-      if (!result) {
+      const parsed = this.initialParser.push(value);
+      if (!parsed) {
         continue;
       }
 
-      return this.createInitialHeaderResult(result);
+      return this.createInitialHeaderResult(parsed);
     }
   }
 
-  private parseBufferedHeader(): HeaderResult | null {
-    const result = processHeader(this.headerBuffer, this.validateUUID);
-    if (!result.hasError) {
-      return result;
-    }
-
-    if (result.message !== BUFFER_TOO_SHORT_MESSAGE) {
-      throw new Error(result.message ?? 'Invalid VLESS header');
-    }
-
-    if (this.headerBuffer.byteLength > MAX_XHTTP_HEADER_BYTES) {
-      throw new Error('VLESS header exceeds limit');
-    }
-
-    return null;
-  }
-
-  private createInitialHeaderResult(result: HeaderResult): ParsedInitialHeader {
+  private createInitialHeaderResult(
+    parsed: NonNullable<ReturnType<InitialHeaderParser['push']>>,
+  ): ParsedInitialHeader {
+    const result = parsed.header;
     const rawDataIndex = result.rawDataIndex;
     if (!result.addressRemote || result.portRemote === undefined || rawDataIndex === undefined) {
       throw new Error('Invalid VLESS header');
     }
 
     this.address = result.addressRemote;
-    const connectionType = result.isMux ? 'mux' : result.isUDP ? 'udp' : 'tcp';
-    this.portWithRandomLog = `${result.portRemote}--${Math.random().toString(36).substring(2, 6)} ${connectionType}`;
-    const rawClientData = this.takeRawClientData(rawDataIndex);
+    this.portWithRandomLog = `${result.portRemote}--${Math.random().toString(36).substring(2, 6)} ${parsed.connectionType}`;
 
     if (this.trafficStatsService.isEnabled && result.userUUID) {
       this.trafficTracker = this.trafficStatsService.createTracker(
@@ -283,21 +253,8 @@ class XHttpConnectionSession {
         isMux: result.isMux,
         userUUID: result.userUUID,
       },
-      rawClientData,
+      rawClientData: parsed.rawClientData,
     };
-  }
-
-  private appendHeaderChunk(chunk: Uint8Array): void {
-    const newBuffer = new Uint8Array(this.headerBuffer.length + chunk.byteLength) as WorkerBytes;
-    newBuffer.set(this.headerBuffer, 0);
-    newBuffer.set(chunk, this.headerBuffer.length);
-    this.headerBuffer = newBuffer;
-  }
-
-  private takeRawClientData(rawDataIndex: number): WorkerBytes {
-    const rawClientData = this.headerBuffer.slice(rawDataIndex) as WorkerBytes;
-    this.headerBuffer = new Uint8Array(0) as WorkerBytes;
-    return rawClientData;
   }
 
   private createTcpTransport(

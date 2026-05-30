@@ -8,18 +8,18 @@
  */
 
 import { type CacheStore, createCacheStore, DEFAULT_CACHE_CONFIG } from '../cache';
-import type { UUIDProvider, UUIDValidationResult } from '../types';
+import type { UUIDProvider } from '../types';
 import { createLogger } from '../utils/logger';
 import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
 import { isValidUUID } from '../utils/uuid';
-import { BaseUUIDProvider, HttpApiUUIDProvider, StaticUUIDProvider } from './base';
+import { BaseUUIDProvider, StaticUUIDProvider } from './base';
 
 const log = createLogger('UUID');
 
 // 导出 Remnawave 提供者
 export { createRemnawaveProvider, RemnawaveUUIDProvider } from './remnawave';
 // 导出基类和内置提供者
-export { BaseUUIDProvider, HttpApiUUIDProvider, StaticUUIDProvider };
+export { BaseUUIDProvider, StaticUUIDProvider };
 
 // ============================================================================
 // 提供者管理器配置
@@ -74,24 +74,6 @@ export class UUIDProviderManager {
     this.providers.push(provider);
     // 按优先级排序（数字越小优先级越高）
     this.providers.sort((a, b) => a.priority - b.priority);
-  }
-
-  /**
-   * 批量注册提供者
-   * @param providers 提供者数组
-   */
-  registerAll(providers: UUIDProvider[]): void {
-    for (const p of providers) {
-      this.register(p);
-    }
-  }
-
-  /**
-   * 移除指定名称的提供者
-   * @param name 提供者名称
-   */
-  unregister(name: string): void {
-    this.providers = this.providers.filter((p) => p.name !== name);
   }
 
   /**
@@ -162,46 +144,6 @@ export class UUIDProviderManager {
     await this.cacheStore.deleteMergedUUIDCache();
     // 重新获取
     await this.getAllUUIDs(true);
-  }
-
-  /**
-   * 验证 UUID 是否有效
-   * @param uuid 待验证的 UUID
-   * @param forceRefresh 是否强制刷新缓存
-   * @returns 验证结果
-   */
-  async validateUUID(uuid: string, forceRefresh = false): Promise<UUIDValidationResult> {
-    // 首先验证格式
-    if (!isValidUUID(uuid)) {
-      return { isValid: false };
-    }
-
-    const normalizedUUID = uuid.toLowerCase();
-
-    // 尝试从缓存获取
-    if (!forceRefresh) {
-      const cached = await this.cacheStore.getMergedUUIDCache();
-      if (cached?.uuidMap[normalizedUUID]) {
-        return { isValid: true, provider: cached.uuidMap[normalizedUUID] };
-      }
-    }
-
-    // 刷新缓存并重新验证
-    await this.getAllUUIDs(forceRefresh);
-    const cached = await this.cacheStore.getMergedUUIDCache();
-
-    if (cached?.uuidMap[normalizedUUID]) {
-      return { isValid: true, provider: cached.uuidMap[normalizedUUID] };
-    }
-
-    return { isValid: false };
-  }
-
-  /**
-   * 获取已注册的提供者列表
-   */
-  getProviders(): readonly UUIDProvider[] {
-    return this.providers;
   }
 
   /**

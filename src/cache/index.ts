@@ -16,7 +16,7 @@ export { KVStore } from './kv';
 // 分层缓存导出
 export { TieredCache, type TieredCacheOptions } from './tiered';
 // 类型导出
-export type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
+export type { CacheStore, MergedUUIDCache } from './types';
 export { DEFAULT_CACHE_TTL, L2_WRITE_INTERVAL } from './types';
 
 // ==========================================================================

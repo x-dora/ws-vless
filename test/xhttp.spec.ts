@@ -149,7 +149,7 @@ function uuidToBytes(uuid: string): number[] {
   return parts.map((part) => Number.parseInt(part, 16));
 }
 
-function buildVlessHeader(
+function buildProtocolHeader(
   options: {
     uuid?: string;
     command?: ProxyCommand;
@@ -451,7 +451,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x-anything', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({ payload: new Uint8Array([1, 2, 3]) }),
+      body: buildProtocolHeader({ payload: new Uint8Array([1, 2, 3]) }),
     });
     const ctx = createExecutionContext();
 
@@ -479,7 +479,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+      body: createChunkedRequestBody([buildProtocolHeader({ payload: firstPayload }), nextPayload]),
     });
     const ctx = createExecutionContext();
 
@@ -518,7 +518,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+      body: createChunkedRequestBody([buildProtocolHeader({ payload: firstPayload }), nextPayload]),
     });
     const ctx = createExecutionContext();
 
@@ -579,7 +579,7 @@ describe('XHTTP gateway', () => {
       { executionContext: ctx, budget: createSubrequestBudget(48) },
       createSingleUUIDValidator(TEST_UUID),
     );
-    body.enqueue(buildVlessHeader({ payload: firstPayload }));
+    body.enqueue(buildProtocolHeader({ payload: firstPayload }));
     const response = await responsePromise;
     if (!response.body) {
       throw new Error('Expected streaming response body');
@@ -645,7 +645,7 @@ describe('XHTTP gateway', () => {
       { executionContext: ctx, budget: createSubrequestBudget(48) },
       createSingleUUIDValidator(TEST_UUID),
     );
-    body.enqueue(buildVlessHeader({ payload: firstPayload }));
+    body.enqueue(buildProtocolHeader({ payload: firstPayload }));
     const response = await responsePromise;
     const bodyPromise = response.arrayBuffer();
     body.enqueue(nextPayload);
@@ -686,7 +686,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc-web' },
-      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+      body: createChunkedRequestBody([buildProtocolHeader({ payload: firstPayload }), nextPayload]),
       signal: abortController.signal,
     });
     const ctx = createExecutionContext();
@@ -727,7 +727,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: createChunkedRequestBody([buildVlessHeader({ payload: firstPayload }), nextPayload]),
+      body: createChunkedRequestBody([buildProtocolHeader({ payload: firstPayload }), nextPayload]),
     });
     const ctx = createExecutionContext();
 
@@ -794,7 +794,7 @@ describe('XHTTP gateway', () => {
       { executionContext: ctx, budget: createSubrequestBudget(48) },
       createSingleUUIDValidator(TEST_UUID),
     );
-    controller.enqueue(buildVlessHeader({ payload: firstPayload }));
+    controller.enqueue(buildProtocolHeader({ payload: firstPayload }));
     const response = await responsePromise;
     const bodyPromise = response.arrayBuffer();
     controller.enqueue(secondPayload);
@@ -817,7 +817,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({ uuid: '11111111-1111-4111-8111-111111111111' }),
+      body: buildProtocolHeader({ uuid: '11111111-1111-4111-8111-111111111111' }),
     });
 
     const response = await createGateway().handle(
@@ -834,7 +834,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({ command: ProxyCommand.MUX }),
+      body: buildProtocolHeader({ command: ProxyCommand.MUX }),
     });
 
     const response = await createGateway().handle(
@@ -854,7 +854,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({
+      body: buildProtocolHeader({
         command: ProxyCommand.UDP,
         port: 53,
         payload: createUdpPacket(dnsQuery),
@@ -886,7 +886,7 @@ describe('XHTTP gateway', () => {
     const request = new Request('https://example.com/x', {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
-      body: buildVlessHeader({
+      body: buildProtocolHeader({
         command: ProxyCommand.UDP,
         port: 123,
         payload: createUdpPacket(new Uint8Array([1, 2, 3])),
@@ -911,7 +911,7 @@ describe('XHTTP gateway', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/grpc' },
       body: createChunkedRequestBody([
-        buildVlessHeader({
+        buildProtocolHeader({
           command: ProxyCommand.UDP,
           port: 53,
           payload: new Uint8Array([0, 3, 1]),
@@ -945,7 +945,7 @@ describe('XHTTP gateway', () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/grpc' },
-        body: buildVlessHeader(),
+        body: buildProtocolHeader(),
       },
     );
     const ctx = createExecutionContext();

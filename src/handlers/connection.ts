@@ -6,13 +6,7 @@
 
 import type { RequestScope } from '../app/types';
 import type { RuntimeConfig } from '../config';
-import { resolveRetryOverrides } from '../config/request-overrides';
-import {
-  BUFFER_TOO_SHORT_MESSAGE,
-  createResponseHeader,
-  processHeader,
-  type UUIDValidator,
-} from '../core/header';
+import { createResponseHeader, type UUIDValidator } from '../core/header';
 import type { TrafficStatsService, TrafficTracker } from '../services/stats-reporter';
 import type { ConnLogFunction, HeaderResult } from '../types';
 import {
@@ -22,9 +16,11 @@ import {
 } from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
 import type { OutboundRetryOptions } from '../utils/nat64';
-import { createBudgetedFetcher, isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
+import { isSubrequestBudgetExceededError } from '../utils/subrequest-budget';
 import { WebSocketDownlinkSink } from './downlink';
+import { InitialHeaderParser } from './initial-header';
 import { createMuxSession, type MuxSession } from './mux-session';
+import { createTunnelRetryOptions } from './retry-options';
 import { TcpTransport } from './tcp';
 import { UdpDnsTransport } from './udp';
 
@@ -52,25 +48,13 @@ export class WebSocketGateway {
     scope: RequestScope,
     validateUUID: UUIDValidator,
   ): Promise<Response> {
-    const url = new URL(request.url);
-    const retryOverrides = resolveRetryOverrides(url.searchParams, {
-      proxyIP: this.options.config.proxyIP,
-      nat64Prefixes: this.options.config.nat64Prefixes,
-    });
-    const retryOptions: OutboundRetryOptions = {
-      proxyIP: retryOverrides.proxyIP,
-      nat64Prefixes: retryOverrides.nat64Prefixes,
-      resolverURL: this.options.config.nat64ResolverURL,
-      fetcher: createBudgetedFetcher(scope.budget, 'nat64 resolver fetch'),
-    };
-
     const session = new TunnelConnectionSession({
       request,
       validateUUID,
       scope,
       config: this.options.config,
       trafficStatsService: this.options.trafficStatsService,
-      retryOptions,
+      retryOptions: createTunnelRetryOptions(request, this.options.config, scope.budget),
     });
 
     return await session.start();
@@ -85,9 +69,9 @@ class TunnelConnectionSession {
   private readonly trafficStatsService: TrafficStatsService;
   private readonly retryOptions: OutboundRetryOptions;
   private readonly log: ConnLogFunction;
+  private readonly initialParser: InitialHeaderParser;
 
   private webSocket!: WebSocket;
-  private headerBuffer: WorkerBytes = new Uint8Array(0) as WorkerBytes;
   private responseHeader: WorkerBytes = new Uint8Array([0, 0]) as WorkerBytes;
   private address = '';
   private portWithRandomLog = '';
@@ -105,6 +89,7 @@ class TunnelConnectionSession {
     this.trafficStatsService = options.trafficStatsService;
     this.retryOptions = options.retryOptions;
     this.log = createConnLog(() => `${this.address}:${this.portWithRandomLog}`);
+    this.initialParser = new InitialHeaderParser(this.validateUUID);
   }
 
   async start(): Promise<Response> {
@@ -193,65 +178,41 @@ class TunnelConnectionSession {
   private async handleInitialChunk(
     chunk: ArrayBuffer | ArrayBufferLike | Uint8Array,
   ): Promise<void> {
-    this.appendHeaderChunk(chunk);
-
-    const {
-      hasError,
-      message,
-      portRemote = 443,
-      addressRemote = '',
-      addressType,
-      rawDataIndex,
-      protocolVersion = new Uint8Array([0, 0]),
-      isUDP,
-      isMux,
-      userUUID,
-    } = processHeader(this.headerBuffer, this.validateUUID);
-
-    if (hasError) {
-      if (message === BUFFER_TOO_SHORT_MESSAGE) {
-        return;
-      }
-      throw new Error(message);
+    const parsed = this.initialParser.push(chunk);
+    if (!parsed) {
+      return;
     }
 
-    this.address = addressRemote;
-    const connectionType = isMux ? 'mux' : isUDP ? 'udp' : 'tcp';
-    this.portWithRandomLog = `${portRemote}--${Math.random().toString(36).substring(2, 6)} ${connectionType}`;
-    this.responseHeader = createResponseHeader(protocolVersion);
+    const {
+      addressRemote = '',
+      portRemote = 443,
+      addressType,
+      protocolVersion = new Uint8Array([0, 0]),
+      userUUID,
+    } = parsed.header;
 
-    const rawClientData = this.takeRawClientData(rawDataIndex);
+    this.address = addressRemote;
+    this.portWithRandomLog = `${portRemote}--${Math.random().toString(36).substring(2, 6)} ${parsed.connectionType}`;
+    this.responseHeader = createResponseHeader(protocolVersion);
 
     if (this.trafficStatsService.isEnabled && userUUID) {
       this.trafficTracker = this.trafficStatsService.createTracker(
         userUUID,
         `${addressRemote}:${portRemote}`,
-        connectionType,
+        parsed.connectionType,
       );
     }
 
     await this.dispatchInitialConnection(
-      { addressRemote, addressType, portRemote, isUDP, isMux },
-      rawClientData,
+      {
+        addressRemote,
+        addressType,
+        portRemote,
+        isUDP: parsed.header.isUDP,
+        isMux: parsed.header.isMux,
+      },
+      parsed.rawClientData,
     );
-  }
-
-  private appendHeaderChunk(chunk: ArrayBuffer | ArrayBufferLike | Uint8Array): void {
-    const incoming = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-    const newBuffer = new Uint8Array(this.headerBuffer.length + incoming.byteLength) as WorkerBytes;
-    newBuffer.set(this.headerBuffer, 0);
-    newBuffer.set(incoming, this.headerBuffer.length);
-    this.headerBuffer = newBuffer;
-  }
-
-  private takeRawClientData(rawDataIndex: number | undefined): WorkerBytes {
-    if (rawDataIndex === undefined) {
-      throw new Error('Invalid header: missing raw data index');
-    }
-
-    const rawClientData = this.headerBuffer.slice(rawDataIndex) as WorkerBytes;
-    this.headerBuffer = new Uint8Array(0) as WorkerBytes;
-    return rawClientData;
   }
 
   private async dispatchInitialConnection(

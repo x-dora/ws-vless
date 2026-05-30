@@ -7,7 +7,7 @@
 
 import { cacheLogger } from '../utils/logger';
 import { isSubrequestBudgetExceededError, type SubrequestBudget } from '../utils/subrequest-budget';
-import type { CacheStore, MergedUUIDCache, UUIDCacheData } from './types';
+import type { CacheStore, MergedUUIDCache } from './types';
 
 /**
  * 缓存键前缀
@@ -35,91 +35,6 @@ export class CacheAPIStore implements CacheStore {
 
   isAvailable(): boolean {
     return typeof caches !== 'undefined' && caches.default !== undefined;
-  }
-
-  async getCachedUUIDs(provider: string): Promise<UUIDCacheData | null> {
-    if (!this.isAvailable()) {
-      return null;
-    }
-
-    try {
-      this.budget?.consume(1, `CacheAPI.match ${provider}`);
-      const cache = caches.default;
-      const request = new Request(getCacheKey(`uuids:${provider}`));
-      const response = await cache.match(request);
-
-      if (!response) {
-        return null;
-      }
-
-      const data = (await response.json()) as UUIDCacheData;
-
-      // 检查是否过期
-      if (data.expiresAt && Date.now() > data.expiresAt) {
-        await this.deleteCachedUUIDs(provider);
-        return null;
-      }
-
-      return data;
-    } catch (error) {
-      if (isSubrequestBudgetExceededError(error)) {
-        throw error;
-      }
-      cacheLogger.error(`[CacheAPI] Get UUIDs error (${provider}):`, error);
-      return null;
-    }
-  }
-
-  async setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void> {
-    if (!this.isAvailable()) {
-      return;
-    }
-
-    try {
-      this.budget?.consume(1, `CacheAPI.put ${provider}`);
-      const cache = caches.default;
-      const request = new Request(getCacheKey(`uuids:${provider}`));
-      const now = Date.now();
-
-      const data: UUIDCacheData = {
-        uuids,
-        cachedAt: now,
-        provider,
-        expiresAt: now + ttlSeconds * 1000,
-      };
-
-      const response = new Response(JSON.stringify(data), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': `max-age=${ttlSeconds}`,
-        },
-      });
-
-      await cache.put(request, response);
-    } catch (error) {
-      if (isSubrequestBudgetExceededError(error)) {
-        throw error;
-      }
-      cacheLogger.error(`[CacheAPI] Set UUIDs error (${provider}):`, error);
-    }
-  }
-
-  async deleteCachedUUIDs(provider: string): Promise<boolean> {
-    if (!this.isAvailable()) {
-      return false;
-    }
-
-    try {
-      this.budget?.consume(1, `CacheAPI.delete ${provider}`);
-      const cache = caches.default;
-      return await cache.delete(new Request(getCacheKey(`uuids:${provider}`)));
-    } catch (error) {
-      if (isSubrequestBudgetExceededError(error)) {
-        throw error;
-      }
-      cacheLogger.error(`[CacheAPI] Delete UUIDs error (${provider}):`, error);
-      return false;
-    }
   }
 
   async getMergedUUIDCache(): Promise<MergedUUIDCache | null> {

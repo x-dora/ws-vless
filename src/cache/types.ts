@@ -3,20 +3,6 @@
  */
 
 /**
- * UUID 缓存数据结构
- */
-export interface UUIDCacheData {
-  /** UUID 列表 */
-  uuids: string[];
-  /** 缓存创建时间戳 */
-  cachedAt: number;
-  /** 提供者名称 */
-  provider: string;
-  /** 过期时间戳 */
-  expiresAt: number;
-}
-
-/**
  * 合并 UUID 缓存数据
  */
 export interface MergedUUIDCache {
@@ -34,15 +20,6 @@ export interface MergedUUIDCache {
 export interface CacheStore {
   /** 存储名称 */
   readonly name: string;
-
-  /** 获取缓存的 UUID 列表 */
-  getCachedUUIDs(provider: string): Promise<UUIDCacheData | null>;
-
-  /** 设置 UUID 缓存 */
-  setCachedUUIDs(provider: string, uuids: string[], ttlSeconds: number): Promise<void>;
-
-  /** 删除 UUID 缓存 */
-  deleteCachedUUIDs(provider: string): Promise<boolean>;
 
   /** 获取合并后的 UUID 缓存 */
   getMergedUUIDCache(): Promise<MergedUUIDCache | null>;

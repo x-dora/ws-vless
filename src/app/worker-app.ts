@@ -4,7 +4,7 @@
  * 这里负责把 AppContext、路由器和 WebSocket 网关串成最终的 fetch 处理器。
  */
 
-import { createUUIDValidator } from '../core/header';
+import { createUUIDValidator, type UUIDValidator } from '../core/header';
 import { WebSocketGateway } from '../handlers/connection';
 import { isXHttpStreamOneRequest, XHttpGateway } from '../handlers/xhttp';
 import { HttpRouter } from '../http/http-router';
@@ -46,10 +46,7 @@ export class WorkerApp {
   }
 
   async fetch(request: Request, _env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
-    const scope: RequestScope = {
-      executionContext: ctx,
-      budget: this.context.createRequestBudget(),
-    };
+    const scope = this.createRequestScope(ctx);
 
     const url = new URL(request.url);
     this.context.requestMetrics.recordRequest(url.pathname);
@@ -59,18 +56,14 @@ export class WorkerApp {
       if (upgradeHeader === 'websocket') {
         this.context.requestMetrics.recordWebSocketUpgrade();
 
-        const uuidManager = this.context.createUUIDManager(scope.budget);
-        const validUUIDs = await uuidManager.getAllUUIDs();
-        const validateUUID = createUUIDValidator(validUUIDs);
+        const validateUUID = await this.createTunnelUUIDValidator(scope);
 
         const response = await this.websocketGateway.handle(request, scope, validateUUID);
         return this.recordRoutedResponse(response);
       }
 
       if (isXHttpStreamOneRequest(request)) {
-        const uuidManager = this.context.createUUIDManager(scope.budget);
-        const validUUIDs = await uuidManager.getAllUUIDs();
-        const validateUUID = createUUIDValidator(validUUIDs);
+        const validateUUID = await this.createTunnelUUIDValidator(scope);
 
         const response = await this.xhttpGateway.handle(request, scope, validateUUID);
         return this.recordRoutedResponse(response);
@@ -99,6 +92,19 @@ export class WorkerApp {
         status: 500,
       });
     }
+  }
+
+  private createRequestScope(ctx: ExecutionContext): RequestScope {
+    return {
+      executionContext: ctx,
+      budget: this.context.createRequestBudget(),
+    };
+  }
+
+  private async createTunnelUUIDValidator(scope: RequestScope): Promise<UUIDValidator> {
+    const uuidManager = this.context.createUUIDManager(scope.budget);
+    const validUUIDs = await uuidManager.getAllUUIDs();
+    return createUUIDValidator(validUUIDs);
   }
 
   private recordRoutedResponse(response: Response): Response {

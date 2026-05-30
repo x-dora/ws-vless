@@ -17,7 +17,7 @@
 ### 1. 安装依赖
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### 2. 本地开发
@@ -49,13 +49,13 @@ UUID=your-test-uuid
 启动开发服务器：
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 ### 3. 部署
 
 ```bash
-npm run deploy
+pnpm deploy
 ```
 
 部署后在 Cloudflare Dashboard 设置环境变量：
@@ -157,8 +157,11 @@ src/
 │   └── mux.ts            # Mux 多路复用
 ├── handlers/             # 请求处理器
 │   ├── connection.ts     # 连接处理
+│   ├── xhttp.ts          # XHTTP stream-one 处理
 │   ├── tcp.ts            # TCP 代理
 │   ├── udp.ts            # UDP 代理
+│   ├── retry-options.ts  # 出站重试选项构造
+│   ├── initial-header.ts # 初始协议头解析
 │   └── mux-session.ts    # Mux 会话管理
 ├── cache/                # 缓存实现
 │   ├── cache-api.ts      # Cache API (L1)
@@ -166,7 +169,7 @@ src/
 │   ├── d1.ts             # D1 数据库 (L2)
 │   └── tiered.ts         # 分层缓存
 ├── providers/            # UUID 提供者
-│   ├── base.ts           # 基础接口
+│   ├── base.ts           # 基础接口和静态 UUID
 │   └── remnawave.ts      # Remnawave 集成
 ├── services/             # 服务
 │   └── stats-reporter.ts # 流量统计上报
@@ -210,13 +213,13 @@ wrangler d1 execute uuid-cache --command="CREATE INDEX IF NOT EXISTS idx_expires
 ### 运行测试
 
 ```bash
-npm test
+pnpm test
 ```
 
 ### 生成类型
 
 ```bash
-npm run cf-typegen
+pnpm cf-typegen
 ```
 
 ## 工具脚本
@@ -227,10 +230,10 @@ Remnawave Node 模拟器，用于本地测试流量统计功能。详见 [script
 
 ```bash
 # 开发模式（无认证）
-python scripts/mock_node.py --port 2222 --no-auth
+uv run python scripts/mock_node.py --port 2222 --no-auth
 
 # 完整模式（HTTPS + mTLS + JWT）
-python scripts/mock_node.py --port 2222 --secret-key "eyJub2Rl..."
+uv run python scripts/mock_node.py --port 2222 --secret-key "eyJub2Rl..."
 ```
 
 ## 客户端配置

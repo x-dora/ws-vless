@@ -117,34 +117,9 @@ export interface UUIDProviderConfig {
   budget?: SubrequestBudget;
 }
 
-/**
- * UUID 验证结果
- */
-export interface UUIDValidationResult {
-  /** 是否有效 */
-  isValid: boolean;
-  /** UUID 来源提供者 */
-  provider?: string;
-  /** 过期时间（如果有） */
-  expiresAt?: Date;
-}
-
 // ============================================================================
 // 连接类型
 // ============================================================================
-
-/**
- * 远程 Socket 包装器
- * 用于在多个函数间共享 socket 引用
- */
-export interface RemoteSocketWrapper {
-  value: Socket | null;
-}
-
-/**
- * 日志函数类型（旧版，保留兼容性）
- */
-export type LogFunction = (info: string, event?: string) => void;
 
 /**
  * 连接日志函数类型（支持日志级别）
