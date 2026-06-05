@@ -54,6 +54,12 @@ pnpm dev
 
 ### 3. 部署
 
+复制 `wrangler.jsonc.example` 为 `wrangler.jsonc`，并按需配置 Worker 名称、路由、KV/D1 绑定等部署参数：
+
+```bash
+cp wrangler.jsonc.example wrangler.jsonc
+```
+
 ```bash
 pnpm deploy
 ```

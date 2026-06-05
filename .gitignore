@@ -160,6 +160,8 @@ dist
 
 # wrangler project
 
+wrangler.jsonc
+!wrangler.jsonc.example
 .dev.vars*
 !.dev.vars.example
 .env*
