@@ -7,7 +7,7 @@
 import type { RequestScope } from '../app/types';
 import type { RuntimeConfig } from '../config';
 import { createResponseHeader, type UUIDValidator } from '../core/header';
-import type { TrafficStatsService, TrafficTracker } from '../services/stats-reporter';
+import type { TrafficStatsService } from '../services/stats-reporter';
 import type { ConnLogFunction, HeaderResult } from '../types';
 import {
   decodeWebSocketEarlyData,
@@ -22,6 +22,7 @@ import { InitialHeaderParser } from './initial-header';
 import { createMuxSession, type MuxSession } from './mux-session';
 import { createTunnelRetryOptions } from './retry-options';
 import { TcpTransport } from './tcp';
+import { TunnelTrafficReporter } from './tunnel-traffic';
 import { UdpDnsTransport } from './udp';
 
 type WorkerBytes = Uint8Array<ArrayBufferLike>;
@@ -70,12 +71,12 @@ class TunnelConnectionSession {
   private readonly retryOptions: OutboundRetryOptions;
   private readonly log: ConnLogFunction;
   private readonly initialParser: InitialHeaderParser;
+  private readonly trafficReporter: TunnelTrafficReporter;
 
   private webSocket!: WebSocket;
   private responseHeader: WorkerBytes = new Uint8Array([0, 0]) as WorkerBytes;
   private address = '';
   private portWithRandomLog = '';
-  private trafficTracker: TrafficTracker | null = null;
   private muxSession: MuxSession | null = null;
   private tcpTransport: TcpTransport | null = null;
   private udpTransport: UdpDnsTransport | null = null;
@@ -90,6 +91,11 @@ class TunnelConnectionSession {
     this.retryOptions = options.retryOptions;
     this.log = createConnLog(() => `${this.address}:${this.portWithRandomLog}`);
     this.initialParser = new InitialHeaderParser(this.validateUUID);
+    this.trafficReporter = new TunnelTrafficReporter({
+      scope: this.scope,
+      service: this.trafficStatsService,
+      log: this.log,
+    });
   }
 
   async start(): Promise<Response> {
@@ -195,13 +201,7 @@ class TunnelConnectionSession {
     this.portWithRandomLog = `${portRemote}--${Math.random().toString(36).substring(2, 6)} ${parsed.connectionType}`;
     this.responseHeader = createResponseHeader(protocolVersion);
 
-    if (this.trafficStatsService.isEnabled && userUUID) {
-      this.trafficTracker = this.trafficStatsService.createTracker(
-        userUUID,
-        `${addressRemote}:${portRemote}`,
-        parsed.connectionType,
-      );
-    }
+    this.trafficReporter.start(userUUID, `${addressRemote}:${portRemote}`, parsed.connectionType);
 
     await this.dispatchInitialConnection(
       {
@@ -282,7 +282,7 @@ class TunnelConnectionSession {
       responseHeader: this.responseHeader,
       log: this.log,
       retryOptions: this.retryOptions,
-      trafficTracker: this.trafficTracker,
+      trafficTracker: this.trafficReporter.currentTracker,
       budget: this.scope.budget,
     });
 
@@ -300,36 +300,14 @@ class TunnelConnectionSession {
 
     if (this.muxSession) {
       const muxStats = this.muxSession.getStats();
-      if (this.trafficTracker) {
-        this.trafficTracker.addUplink(muxStats.bytesReceived);
-        this.trafficTracker.addDownlink(muxStats.bytesSent);
-      }
+      this.trafficReporter.addTraffic(muxStats.bytesReceived, muxStats.bytesSent);
       this.muxSession.close();
     }
 
     this.tcpTransport?.close();
     this.udpTransport?.close();
 
-    if (this.trafficTracker) {
-      const stats = this.trafficTracker.getStats();
-      this.log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink}`);
-
-      if (!this.trafficTracker.isReported() && this.trafficTracker.hasTraffic()) {
-        this.trafficTracker.markReported();
-        const reportPromise = this.trafficStatsService
-          .report(stats, this.scope.budget)
-          .then((ok) => {
-            if (ok) {
-              this.log.debug('Stats reported');
-            }
-          })
-          .catch((error) => {
-            this.log.error(`Stats report error: ${String(error)}`);
-          });
-
-        this.scope.executionContext.waitUntil(reportPromise);
-      }
-    }
+    void this.trafficReporter.report();
 
     safeCloseWebSocket(this.webSocket);
   }

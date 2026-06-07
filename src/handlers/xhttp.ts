@@ -8,7 +8,7 @@
 import type { RequestScope } from '../app/types';
 import type { RuntimeConfig } from '../config';
 import { createResponseHeader, type UUIDValidator } from '../core/header';
-import type { TrafficStatsService, TrafficTracker } from '../services/stats-reporter';
+import type { TrafficStatsService } from '../services/stats-reporter';
 import type { ConnLogFunction, HeaderResult } from '../types';
 import { isClosedWritableStreamError } from '../utils/_websocket';
 import { createConnLog } from '../utils/logger';
@@ -18,6 +18,7 @@ import { StreamDownlinkSink } from './downlink';
 import { InitialHeaderParser } from './initial-header';
 import { createTunnelRetryOptions } from './retry-options';
 import { TcpTransport } from './tcp';
+import { TunnelTrafficReporter } from './tunnel-traffic';
 import { UdpDnsTransport } from './udp';
 
 type WorkerBytes = Uint8Array<ArrayBufferLike>;
@@ -97,11 +98,11 @@ class XHttpConnectionSession {
   private readonly retryOptions: OutboundRetryOptions;
   private readonly log: ConnLogFunction;
   private readonly initialParser: InitialHeaderParser;
+  private readonly trafficReporter: TunnelTrafficReporter;
 
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private address = '';
   private portWithRandomLog = '';
-  private trafficTracker: TrafficTracker | null = null;
   private tcpTransport: TcpTransport | null = null;
   private udpTransport: UdpDnsTransport | null = null;
   private downlink: StreamDownlinkSink | null = null;
@@ -130,6 +131,13 @@ class XHttpConnectionSession {
     this.initialParser = new InitialHeaderParser(this.validateUUID, {
       maxHeaderBytes: MAX_XHTTP_HEADER_BYTES,
       headerTooLargeMessage: 'VLESS header exceeds limit',
+    });
+    this.trafficReporter = new TunnelTrafficReporter({
+      scope: this.scope,
+      service: this.trafficStatsService,
+      log: this.log,
+      label: 'XHTTP',
+      warnOnReportFalse: true,
     });
   }
 
@@ -234,13 +242,11 @@ class XHttpConnectionSession {
     this.address = result.addressRemote;
     this.portWithRandomLog = `${result.portRemote}--${Math.random().toString(36).substring(2, 6)} ${parsed.connectionType}`;
 
-    if (this.trafficStatsService.isEnabled && result.userUUID) {
-      this.trafficTracker = this.trafficStatsService.createTracker(
-        result.userUUID,
-        `${result.addressRemote}:${result.portRemote}`,
-        'xhttp',
-      );
-    }
+    this.trafficReporter.start(
+      result.userUUID,
+      `${result.addressRemote}:${result.portRemote}`,
+      'xhttp',
+    );
 
     return {
       header: {
@@ -272,7 +278,7 @@ class XHttpConnectionSession {
       responseHeader,
       log: this.log,
       retryOptions: this.retryOptions,
-      trafficTracker: this.trafficTracker,
+      trafficTracker: this.trafficReporter.currentTracker,
       budget: this.scope.budget,
       closeDownlinkOnRemoteClose: true,
     });
@@ -420,7 +426,7 @@ class XHttpConnectionSession {
     }
     this.finalized = true;
 
-    this.finalizePromise = this.reportFinalTraffic(reason);
+    this.finalizePromise = this.trafficReporter.report(reason);
 
     this.tcpTransport?.close();
     this.udpTransport?.close();
@@ -459,44 +465,6 @@ class XHttpConnectionSession {
 
     clearInterval(this.uplinkStallTimer);
     this.uplinkStallTimer = null;
-  }
-
-  private reportFinalTraffic(reason: string): Promise<void> {
-    const tracker = this.trafficTracker;
-    if (!tracker) {
-      this.log.debug(`XHTTP final report skipped (${reason}): no traffic tracker`);
-      return Promise.resolve();
-    }
-
-    const stats = tracker.getStats();
-    this.log.debug(`Traffic: ↑${stats.uplink} ↓${stats.downlink} (${reason})`);
-
-    if (tracker.isReported()) {
-      this.log.debug(`XHTTP final report skipped (${reason}): already reported`);
-      return Promise.resolve();
-    }
-
-    if (!tracker.hasTraffic()) {
-      this.log.debug(`XHTTP final report skipped (${reason}): no traffic`);
-      return Promise.resolve();
-    }
-
-    tracker.markReported();
-    const reportPromise = this.trafficStatsService
-      .report(stats, this.scope.budget)
-      .then((ok) => {
-        if (ok) {
-          this.log.debug(`Stats reported (${reason})`);
-        } else {
-          this.log.warn(`Stats report returned false (${reason})`);
-        }
-      })
-      .catch((error) => {
-        this.log.error(`Stats report error (${reason}): ${String(error)}`);
-      });
-
-    this.scope.executionContext.waitUntil(reportPromise);
-    return reportPromise;
   }
 
   private badRequest(message: string): Response {
